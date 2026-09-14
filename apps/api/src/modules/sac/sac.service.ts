@@ -5,6 +5,7 @@ import { MAX_ATTACHMENT_COUNT, type StoredAttachment } from '../../lib/attachmen
 import { assertCanCancel, assertCanComplete, assertCanReactivate, assertCanReopen, assertStatusTransition } from '../../domain/sac-rules.js';
 import { classifyOperationalAttention, operationalBoundaries } from '../../domain/operational-attention.js';
 import { normalizeCatalogName } from '../catalog/catalog.schema.js';
+import { createCaseNotification } from '../notifications/notification.service.js';
 import type { assignmentSchema, changeStatusSchema, commentSchema, createSacRecordSchema, dueDateChangeSchema, historyQuerySchema, listSacRecordsSchema, priorityChangeSchema, takeCaseSchema, updateSacRecordSchema } from './sac.schema.js';
 
 type ListInput = z.infer<typeof listSacRecordsSchema>;
@@ -224,6 +225,7 @@ export async function createSacRecord(input: CreateInput, actorId: string, idemp
         },
       });
       await tx.activityLog.create({ data: { recordId: created.id, actorId, eventType: 'CREATED', summary: `Registro ${ticket} criado. Responsável: ${assignee?.name ?? 'Sem responsável'}. Status inicial: PENDING.`, createdAt: activityAt } });
+      await createCaseNotification(tx, { recipientId: input.assigneeId, actorId, recordId: created.id, ticket, type: 'ASSIGNED', title: 'Caso atribuído a você', summary: `${ticket} foi atribuído à sua responsabilidade.`, metadata: { ticket } });
       const record = await tx.sacRecord.findUniqueOrThrow({ where: { id: created.id }, include: recordInclude });
       return { record: { ...record, operational: classifyOperationalAttention(record) }, created: true };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
@@ -305,6 +307,7 @@ export async function assignSacRecord(recordId: string, input: AssignmentInput, 
     if (changed.count !== 1) throw new SacRecordError('STALE_SAC_RECORD', 'Este caso foi atualizado por outro usuário. Recarregue as informações antes de continuar.', 409);
     const eventType = input.assigneeId ? (current.assigneeId ? 'ASSIGNEE_CHANGED' : 'ASSIGNED') : 'ASSIGNEE_REMOVED';
     await tx.activityLog.create({ data: { recordId, actorId, eventType, summary: input.assigneeId ? `Responsável alterado para ${next!.name}.` : 'Responsável removido.', before: { assigneeId: current.assigneeId, assigneeName: previous?.name ?? null }, after: { assigneeId: input.assigneeId, assigneeName: next?.name ?? null, justification: input.justification }, createdAt: activityAt } });
+    await createCaseNotification(tx, { recipientId: input.assigneeId, actorId, recordId, ticket: current.ticket, type: current.assigneeId ? 'ASSIGNEE_CHANGED' : 'ASSIGNED', title: current.assigneeId ? 'Responsabilidade alterada' : 'Caso atribuído a você', summary: `${current.ticket} está agora sob sua responsabilidade.`, metadata: { ticket: current.ticket, previousAssigneeId: current.assigneeId } });
     return finishOperation(tx, recordId);
   });
 }
@@ -333,6 +336,7 @@ export async function changeSacPriority(recordId: string, input: PriorityInput, 
     const changed = await tx.sacRecord.updateMany({ where: { id: recordId, updatedAt: input.updatedAt }, data: { priority: input.priority, lastOperationalActivityAt: activityAt } });
     if (changed.count !== 1) throw new SacRecordError('STALE_SAC_RECORD', 'Este caso foi atualizado por outro usuário. Recarregue as informações antes de continuar.', 409);
     await tx.activityLog.create({ data: { recordId, actorId, eventType: 'PRIORITY_CHANGED', summary: `Prioridade alterada de ${current.priority} para ${input.priority}.`, before: { priority: current.priority }, after: { priority: input.priority, justification: input.justification }, createdAt: activityAt } });
+    if (priorityRank[input.priority] > priorityRank[current.priority]) await createCaseNotification(tx, { recipientId: current.assigneeId, actorId, recordId, ticket: current.ticket, type: 'PRIORITY_RAISED', title: 'Prioridade elevada', summary: `${current.ticket} teve a prioridade elevada para ${input.priority}.`, metadata: { ticket: current.ticket, priority: input.priority } });
     return finishOperation(tx, recordId);
   });
 }
@@ -348,6 +352,7 @@ export async function changeSacDueDate(recordId: string, input: DueDateInput, ac
     const changed = await tx.sacRecord.updateMany({ where: { id: recordId, updatedAt: input.updatedAt }, data: { dueAt: input.dueAt, lastOperationalActivityAt: activityAt } });
     if (changed.count !== 1) throw new SacRecordError('STALE_SAC_RECORD', 'Este caso foi atualizado por outro usuário. Recarregue as informações antes de continuar.', 409);
     await tx.activityLog.create({ data: { recordId, actorId, eventType: 'DUE_DATE_CHANGED', summary: `Prazo alterado para ${serializeDate(input.dueAt)}.`, before: { dueAt: serializeDate(current.dueAt) }, after: { dueAt: serializeDate(input.dueAt), justification: input.justification, overdue: input.dueAt < activityAt }, createdAt: activityAt } });
+    await createCaseNotification(tx, { recipientId: current.assigneeId, actorId, recordId, ticket: current.ticket, type: 'DUE_DATE_CHANGED', title: 'Prazo alterado', summary: `O prazo de ${current.ticket} foi alterado.`, metadata: { ticket: current.ticket, dueAt: serializeDate(input.dueAt) } });
     return finishOperation(tx, recordId);
   });
 }
@@ -357,12 +362,13 @@ export async function addSacComment(recordId: string, input: CommentInput, actor
   const body = sanitizeComment(input.body);
   if (!body) throw new SacRecordError('EMPTY_COMMENT', 'Escreva um comentário.', 422);
   return prisma.$transaction(async tx => {
-    await currentForOperation(tx, recordId, input.updatedAt);
+    const current = await currentForOperation(tx, recordId, input.updatedAt);
     const comment = await tx.comment.create({ data: { recordId, authorId: actorId, body }, include: { author: { select: { id: true, name: true } } } });
     const activityAt = new Date();
     const changed = await tx.sacRecord.updateMany({ where: { id: recordId, updatedAt: input.updatedAt }, data: { updatedAt: activityAt, lastOperationalActivityAt: activityAt } });
     if (changed.count !== 1) throw new SacRecordError('STALE_SAC_RECORD', 'Este caso foi atualizado por outro usuário. Recarregue as informações antes de continuar.', 409);
     await tx.activityLog.create({ data: { recordId, actorId, eventType: 'COMMENT_ADDED', summary: 'Comentário interno adicionado.', after: { commentId: comment.id }, createdAt: activityAt } });
+    await createCaseNotification(tx, { recipientId: current.assigneeId, actorId, recordId, ticket: current.ticket, type: 'COMMENT_ADDED', title: 'Novo comentário no caso', summary: `${current.ticket} recebeu um comentário interno.`, metadata: { ticket: current.ticket, commentId: comment.id } });
     return { comment, record: await finishOperation(tx, recordId) };
   });
 }
@@ -405,6 +411,9 @@ export async function changeSacStatus(recordId: string, input: ChangeStatusInput
     } });
     if (changed.count !== 1) throw new SacRecordError('STALE_SAC_RECORD', 'Este caso foi atualizado por outro usuário. Recarregue as informações antes de continuar.', 409);
     await tx.activityLog.create({ data: { recordId, actorId, eventType, summary: `Status alterado de ${current.status} para ${input.status}.`, before: { status: current.status, assigneeId: current.assigneeId }, after: { status: input.status, reason: input.reason, assumedBy: assumedBy?.name, solutionSummary: input.solutionSummary, identifiedCause: input.identifiedCause, responsibleArea: input.responsibleArea, correctiveAction: input.correctiveAction }, createdAt: activityAt } });
+    const notificationType = eventType === 'REOPENED' ? 'REOPENED' : eventType === 'CANCELLED' ? 'CANCELLED' : eventType === 'COMPLETED' ? 'COMPLETED' : 'STATUS_CHANGED';
+    const notificationTitle = eventType === 'REOPENED' ? 'Caso reaberto' : eventType === 'CANCELLED' ? 'Caso cancelado' : eventType === 'COMPLETED' ? 'Caso concluído' : 'Status alterado';
+    await createCaseNotification(tx, { recipientId: assumedBy?.id ?? current.assigneeId, actorId, recordId, ticket: current.ticket, type: notificationType, title: notificationTitle, summary: `${current.ticket} teve o status alterado para ${input.status}.`, metadata: { ticket: current.ticket, status: input.status } });
     return finishOperation(tx, recordId);
   });
 }

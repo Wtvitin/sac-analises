@@ -5,6 +5,7 @@ const mock = vi.hoisted(() => {
     sacRecord: { findFirst: vi.fn(), updateMany: vi.fn(), findUniqueOrThrow: vi.fn() },
     user: { findUnique: vi.fn() }, activityLog: { create: vi.fn(), findMany: vi.fn(), count: vi.fn() },
     comment: { create: vi.fn() },
+    notification: { create: vi.fn() },
   };
   return { database, transaction: vi.fn(async (input: unknown) => typeof input === 'function' ? (input as (tx: typeof database) => unknown)(database) : Promise.all(input as Promise<unknown>[])) };
 });
@@ -14,7 +15,7 @@ import { addSacComment, assignSacRecord, changeSacDueDate, changeSacPriority, ch
 
 const updatedAt = new Date('2026-09-14T12:00:00Z');
 const current = {
-  id: 'sac-1', status: 'PENDING' as const, priority: 'HIGH' as const, assigneeId: null, updatedAt,
+  id: 'sac-1', ticket: 'SAC-2026-0001', status: 'PENDING' as const, priority: 'HIGH' as const, assigneeId: null, updatedAt,
   openedAt: new Date('2026-09-10T12:00:00Z'), dueAt: new Date('2026-09-15T23:59:59Z'), solutionSummary: null,
   identifiedCause: null, responsibleArea: null, correctiveAction: null, reopenedReason: null, cancellationReason: null, completedAt: null,
 };
@@ -24,6 +25,7 @@ describe('operações persistentes do caso (isoladas)', () => {
     vi.clearAllMocks(); mock.database.sacRecord.findFirst.mockResolvedValue(current); mock.database.sacRecord.updateMany.mockResolvedValue({ count: 1 });
     mock.database.sacRecord.findUniqueOrThrow.mockResolvedValue({ ...current, updatedAt: new Date('2026-09-14T12:01:00Z') });
     mock.database.activityLog.create.mockResolvedValue({ id: 'activity-1' });
+    mock.database.notification.create.mockResolvedValue({ id: 'notification-1' });
     mock.database.user.findUnique.mockResolvedValue({ id: 'analyst-1', name: 'Ana Analista', active: true, approvedAt: updatedAt, role: 'ANALYST' });
   });
 
@@ -31,6 +33,7 @@ describe('operações persistentes do caso (isoladas)', () => {
     await assignSacRecord('sac-1', { updatedAt, assigneeId: 'analyst-1' }, 'admin-1');
     expect(mock.database.sacRecord.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ assigneeId: 'analyst-1' }) }));
     expect(mock.database.activityLog.create).toHaveBeenLastCalledWith({ data: expect.objectContaining({ eventType: 'ASSIGNED' }) });
+    expect(mock.database.notification.create).toHaveBeenCalledWith({ data: expect.objectContaining({ recipientId: 'analyst-1', type: 'ASSIGNED' }) });
     expect(mock.database.sacRecord.updateMany.mock.calls[0][0].data.lastOperationalActivityAt).toBe(mock.database.activityLog.create.mock.calls[0][0].data.createdAt);
     vi.clearAllMocks(); mock.database.sacRecord.findFirst.mockResolvedValue(current); mock.database.sacRecord.updateMany.mockResolvedValue({ count: 1 }); mock.database.sacRecord.findUniqueOrThrow.mockResolvedValue(current); mock.database.user.findUnique.mockResolvedValue({ id: 'analyst-1', name: 'Ana Analista', active: true, approvedAt: updatedAt, role: 'ANALYST' });
     await takeSacRecord('sac-1', { updatedAt }, 'analyst-1');
@@ -87,5 +90,30 @@ describe('operações persistentes do caso (isoladas)', () => {
     await addSacComment('sac-1', { updatedAt, body: '<script>Atualização segura</script>' }, 'admin-1');
     expect(mock.database.comment.create).toHaveBeenCalledWith(expect.objectContaining({ data: { recordId: 'sac-1', authorId: 'admin-1', body: 'Atualização segura' } }));
     expect(mock.database.activityLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({ eventType: 'COMMENT_ADDED' }) });
+  });
+
+  it('notifica o responsável sobre comentário, elevação de prioridade e mudança de prazo', async () => {
+    const assigned = { ...current, assigneeId: 'analyst-1', priority: 'MEDIUM' as const };
+    mock.database.sacRecord.findFirst.mockResolvedValue(assigned);
+    mock.database.comment.create.mockResolvedValue({ id: 'comment-1', body: 'Atualização', author: { id: 'admin-1', name: 'Admin' } });
+    await addSacComment('sac-1', { updatedAt, body: 'Atualização' }, 'admin-1');
+    expect(mock.database.notification.create).toHaveBeenLastCalledWith({ data: expect.objectContaining({ recipientId: 'analyst-1', type: 'COMMENT_ADDED' }) });
+
+    await changeSacPriority('sac-1', { updatedAt, priority: 'HIGH' }, 'admin-1');
+    expect(mock.database.notification.create).toHaveBeenLastCalledWith({ data: expect.objectContaining({ recipientId: 'analyst-1', type: 'PRIORITY_RAISED' }) });
+
+    await changeSacDueDate('sac-1', { updatedAt, dueAt: new Date('2026-09-14T23:59:59Z') }, 'admin-1');
+    expect(mock.database.notification.create).toHaveBeenLastCalledWith({ data: expect.objectContaining({ recipientId: 'analyst-1', type: 'DUE_DATE_CHANGED' }) });
+  });
+
+  it('notifica eventos de status sem notificar o próprio ator', async () => {
+    mock.database.sacRecord.findFirst.mockResolvedValue({ ...current, assigneeId: 'analyst-1' });
+    await changeSacStatus('sac-1', { updatedAt, status: 'IN_PROGRESS', assumeIfUnassigned: false }, 'admin-1', 'ADMIN');
+    expect(mock.database.notification.create).toHaveBeenLastCalledWith({ data: expect.objectContaining({ recipientId: 'analyst-1', type: 'STATUS_CHANGED' }) });
+
+    mock.database.notification.create.mockClear();
+    mock.database.sacRecord.findFirst.mockResolvedValue({ ...current, assigneeId: 'admin-1' });
+    await changeSacStatus('sac-1', { updatedAt, status: 'IN_PROGRESS', assumeIfUnassigned: false }, 'admin-1', 'ADMIN');
+    expect(mock.database.notification.create).not.toHaveBeenCalled();
   });
 });

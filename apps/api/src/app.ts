@@ -8,6 +8,7 @@ import { requireAuth } from './modules/auth/auth.middleware.js';
 import { usersRouter } from './modules/users/users.routes.js';
 import { catalogRouter } from './modules/catalog/catalog.routes.js';
 import { checkDatabaseHealth } from './lib/database-health.js';
+import { notificationRouter } from './modules/notifications/notification.routes.js';
 
 export const app = express();
 app.use(helmet());
@@ -27,6 +28,7 @@ app.use('/auth', authRouter);
 app.use('/users', usersRouter);
 app.use('/catalog', catalogRouter);
 app.use('/sac-records', requireAuth, sacRouter);
+app.use('/notifications', notificationRouter);
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   if (error instanceof ZodError) return res.status(422).json({ error: { code: 'VALIDATION_ERROR', details: error.issues } });
   console.error(error);

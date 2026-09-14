@@ -27,6 +27,23 @@ enum Priority {
   CRITICAL
 }
 
+enum NotificationType {
+  ASSIGNED
+  ASSIGNEE_CHANGED
+  COMMENT_ADDED
+  STATUS_CHANGED
+  PRIORITY_RAISED
+  DUE_DATE_CHANGED
+  NEAR_DUE
+  DUE_TODAY
+  OVERDUE
+  STALE
+  UNASSIGNED
+  REOPENED
+  CANCELLED
+  COMPLETED
+}
+
 model User {
   id            String        @id @default(cuid())
   name          String
@@ -40,6 +57,7 @@ model User {
   createdCases  SacRecord[]   @relation("Creator")
   comments      Comment[]
   activities    ActivityLog[]
+  notifications Notification[]
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 }
@@ -98,6 +116,7 @@ model SacRecord {
   comments         Comment[]
   attachments      Attachment[]
   activities       ActivityLog[]
+  notifications    Notification[]
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
   lastOperationalActivityAt DateTime @default(now())
@@ -210,4 +229,23 @@ model ActivityLog {
   createdAt DateTime  @default(now())
 
   @@index([recordId, createdAt])
+}
+
+model Notification {
+  id          String           @id @default(cuid())
+  recipientId String
+  recordId    String?
+  type        NotificationType
+  title       String
+  summary     String
+  metadata    Json?
+  dedupeKey   String?          @unique
+  readAt      DateTime?
+  createdAt   DateTime         @default(now())
+  recipient   User             @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+  record      SacRecord?       @relation(fields: [recordId], references: [id], onDelete: SetNull)
+
+  @@index([recipientId, createdAt])
+  @@index([recipientId, readAt, createdAt])
+  @@index([recordId])
 }
