@@ -1,0 +1,41 @@
+# Dependências
+node_modules/
+.pnpm-store/
+
+# Builds
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# Ambiente e segredos
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+pnpm-debug.log*
+
+# Testes
+coverage/
+playwright-report/
+test-results/
+
+# Arquivos temporários
+tmp/
+temp/
+.cache/
+
+# Sistema e editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Uploads locais
+uploads/*
+!uploads/.gitkeep

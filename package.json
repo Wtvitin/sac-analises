@@ -1,0 +1,14 @@
+{
+  "name": "sac-analises",
+  "private": true,
+  "packageManager": "pnpm@10.15.1",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @sac/web --filter @sac/api dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "db:generate": "pnpm --filter @sac/api prisma:generate",
+    "db:migrate": "pnpm --filter @sac/api prisma:migrate",
+    "db:seed": "pnpm --filter @sac/api prisma:seed"
+  }
+}

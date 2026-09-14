@@ -1,0 +1,211 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  ANALYST
+  VIEWER
+}
+
+enum SacStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+model User {
+  id            String        @id @default(cuid())
+  name          String
+  email         String        @unique
+  passwordHash  String
+  role          UserRole      @default(ANALYST)
+  active        Boolean       @default(true)
+  approvedAt    DateTime?
+  timezone      String        @default("America/Sao_Paulo")
+  assignedCases SacRecord[]   @relation("Assignee")
+  createdCases  SacRecord[]   @relation("Creator")
+  comments      Comment[]
+  activities    ActivityLog[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+model Customer {
+  id             String      @id @default(cuid())
+  name           String
+  normalizedName String      @unique
+  document       String?
+  records        SacRecord[]
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  archivedAt     DateTime?
+
+  @@index([name])
+}
+
+model TicketCounter {
+  year  Int @id
+  value Int @default(0)
+}
+
+model SacRecord {
+  id               String        @id @default(cuid())
+  ticket           String        @unique
+  orderNumber      String
+  externalTicket   String?
+  idempotencyKey   String?       @unique
+  description      String
+  internalNote     String?
+  priority         Priority      @default(MEDIUM)
+  status           SacStatus     @default(PENDING)
+  channel          String
+  channelId        String?
+  channelCatalog   Channel?      @relation(fields: [channelId], references: [id])
+  openedAt         DateTime      @default(now())
+  dueAt            DateTime
+  completedAt      DateTime?
+  solutionSummary  String?
+  identifiedCause  String?
+  correctiveAction String?
+  responsibleArea  String?
+  reopenedReason   String?
+  cancellationReason String?
+  customerId       String
+  customer         Customer      @relation(fields: [customerId], references: [id])
+  reasonId         String
+  reason           Reason        @relation(fields: [reasonId], references: [id])
+  subreasonId      String?
+  subreason        Subreason?    @relation(fields: [subreasonId], references: [id])
+  assigneeId       String?
+  assignee         User?         @relation("Assignee", fields: [assigneeId], references: [id])
+  createdById      String
+  createdBy        User          @relation("Creator", fields: [createdById], references: [id])
+  items            SacItem[]
+  comments         Comment[]
+  attachments      Attachment[]
+  activities       ActivityLog[]
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  archivedAt       DateTime?
+
+  @@index([orderNumber])
+  @@index([externalTicket])
+  @@index([status])
+  @@index([priority])
+  @@index([assigneeId])
+  @@index([reasonId])
+  @@index([channelId])
+  @@index([openedAt])
+  @@index([dueAt])
+}
+
+model SacItem {
+  id          String    @id @default(cuid())
+  recordId    String
+  record      SacRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  code        String
+  description String
+  batch       String?
+  quantity    Decimal   @db.Decimal(12, 3)
+  note        String?
+  createdAt   DateTime  @default(now())
+}
+
+model Reason {
+  id             String      @id @default(cuid())
+  name           String      @unique
+  normalizedName String      @unique
+  description    String?
+  active         Boolean     @default(true)
+  displayOrder   Int         @default(0)
+  subreasons     Subreason[]
+  records        SacRecord[]
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@index([active, displayOrder, name])
+}
+
+model Subreason {
+  id             String      @id @default(cuid())
+  name           String
+  normalizedName String
+  description    String?
+  active         Boolean     @default(true)
+  displayOrder   Int         @default(0)
+  reasonId       String
+  reason         Reason      @relation(fields: [reasonId], references: [id])
+  records        SacRecord[]
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@unique([reasonId, name])
+  @@unique([reasonId, normalizedName])
+  @@index([reasonId, active, displayOrder, name])
+}
+
+model Channel {
+  id             String      @id @default(cuid())
+  name           String      @unique
+  normalizedName String      @unique
+  description    String?
+  active         Boolean     @default(true)
+  displayOrder   Int         @default(0)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  records        SacRecord[]
+
+  @@index([active, displayOrder, name])
+}
+
+model Comment {
+  id        String    @id @default(cuid())
+  body      String
+  recordId  String
+  record    SacRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User      @relation(fields: [authorId], references: [id])
+  createdAt DateTime  @default(now())
+
+  @@index([recordId, createdAt])
+}
+
+model Attachment {
+  id           String    @id @default(cuid())
+  recordId     String
+  record       SacRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  storageKey   String
+  createdAt    DateTime  @default(now())
+}
+
+model ActivityLog {
+  id        String    @id @default(cuid())
+  recordId  String
+  record    SacRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  actorId   String
+  actor     User      @relation(fields: [actorId], references: [id])
+  eventType String
+  summary   String
+  before    Json?
+  after     Json?
+  createdAt DateTime  @default(now())
+
+  @@index([recordId, createdAt])
+}
