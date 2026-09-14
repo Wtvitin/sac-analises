@@ -12,9 +12,10 @@ export const listSacRecordsSchema = z.object({
   dueTo: z.iso.datetime({ offset: true }).optional(),
   overdueBefore: z.iso.datetime({ offset: true }).optional(),
   unassigned: z.enum(['true']).optional(),
+  attention: z.enum(['required', 'overdue', 'dueToday', 'nearDue', 'stale', 'unassigned', 'noDue']).optional(),
   page: z.coerce.number().int().positive().default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
-  sort: z.enum(['ticket', 'customer', 'status', 'openedAt', 'dueAt', 'priority', 'updatedAt']).default('updatedAt'),
+  sort: z.enum(['ticket', 'customer', 'status', 'openedAt', 'dueAt', 'priority', 'updatedAt', 'attention']).default('updatedAt'),
   order: z.enum(['asc', 'desc']).default('desc'),
 }).refine(input => !input.openedFrom || !input.openedTo || new Date(input.openedFrom) < new Date(input.openedTo), { message: 'Período inválido.', path: ['openedTo'] });
 

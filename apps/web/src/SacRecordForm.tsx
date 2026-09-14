@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { AlertTriangle, FileText, LoaderCircle, PackagePlus, Paperclip, Plus, Trash2, X } from 'lucide-react';
 import { apiRequest } from './api';
+import type { OperationalIndicators } from './data';
 import {
   ACCEPTED_FILE_TYPES, createEmptyItem, createEmptySacForm, hasUnsavedSacChanges, sacFormPayload,
   toLocalDateTimeInput, validateAttachments, validateSacForm, type SacFormErrors, type SacFormValues,
@@ -15,6 +16,7 @@ export type DetailedRecord = {
   customer: Option; reason: Option; subreason: Option | null; channelCatalog: Option | null; assignee: Option | null;
   items: Array<{ id: string; code: string; description: string; batch: string | null; quantity: string; note: string | null }>;
   attachments: Array<{ id: string; originalName: string; mimeType: string; sizeBytes: number }>;
+  operational: OperationalIndicators;
 };
 
 function toDateInput(value: string) {

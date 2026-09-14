@@ -5,16 +5,13 @@ import { EMPTY_RECORD_FILTERS, filterRecords, getDueLabel, paginateRecords, sort
 const makeRecord = (overrides: Partial<RecordItem>): RecordItem => ({
   ticket: 'SAC-2026-0001', customer: 'Cliente Alfa', order: '1001', occurrence: 'Avaria', owner: 'Sem responsável',
   status: 'Pendente', due: '15/09/2026', updated: '12/09/2026, 10:30:00', openedAt: '10/09/2026, 09:00:00',
-  priority: 'Média', description: 'Descrição válida do registro.', ...overrides,
+  priority: 'Média', description: 'Descrição válida do registro.', operational: { isOverdue: false, isDueToday: false, isNearDue: false, isStale: false, isUnassigned: true, attentionReasons: ['UNASSIGNED'], dueState: 'WITHIN_DUE', overdueDays: 0, staleDays: 0, lastOperationalActivityAt: '2026-09-12T13:30:00.000Z' }, ...overrides,
 });
 
 describe('record listing helpers', () => {
-  const now = new Date(2026, 8, 12, 12);
-
   it('sends server search, filters and sorting for any page', () => {
-    const params = recordListParams('avaria', { ...EMPTY_RECORD_FILTERS, priority: 'Alta', unassigned: true, due: 'Hoje', startDate: '2026-09-01', endDate: '2026-09-12' }, 'customer', 'asc', 6, 20, now);
-    expect(Object.fromEntries(params)).toMatchObject({ query: 'avaria', priority: 'HIGH', unassigned: 'true', sort: 'customer', page: '6', pageSize: '20', order: 'asc' });
-    expect(new Date(params.get('dueTo')!).getDate()).toBe(13);
+    const params = recordListParams('avaria', { ...EMPTY_RECORD_FILTERS, priority: 'Alta', attention: 'Sem responsável', startDate: '2026-09-01', endDate: '2026-09-12' }, 'customer', 'asc', 6, 20);
+    expect(Object.fromEntries(params)).toMatchObject({ query: 'avaria', priority: 'HIGH', attention: 'unassigned', sort: 'customer', page: '6', pageSize: '20', order: 'asc' });
     expect(new Date(params.get('openedTo')!).getDate()).toBe(13);
     expect(recordListParams('', EMPTY_RECORD_FILTERS, 'default', 'asc', 1, 20).get('order')).toBe('desc');
   });
@@ -25,13 +22,13 @@ describe('record listing helpers', () => {
 
   it('combines query and filters without losing reason matches', () => {
     const records = [makeRecord({}), makeRecord({ ticket: 'SAC-2026-0002', customer: 'Cliente Beta', occurrence: 'Extravio', priority: 'Alta' })];
-    const result = filterRecords(records, 'extravio', { ...EMPTY_RECORD_FILTERS, priority: 'Alta' }, now);
+    const result = filterRecords(records, 'extravio', { ...EMPTY_RECORD_FILTERS, priority: 'Alta' });
     expect(result.map(record => record.ticket)).toEqual(['SAC-2026-0002']);
   });
 
   it('prioritizes overdue and higher priority by default', () => {
-    const records = [makeRecord({ ticket: 'B', due: '18/09/2026', priority: 'Baixa' }), makeRecord({ ticket: 'A', due: '10/09/2026', priority: 'Crítica' })];
-    expect(sortRecords(records, 'default', 'asc', now)[0].ticket).toBe('A');
+    const records = [makeRecord({ ticket: 'B', due: '18/09/2026', priority: 'Baixa' }), makeRecord({ ticket: 'A', due: '10/09/2026', priority: 'Crítica', operational: { ...makeRecord({}).operational, isOverdue: true, overdueDays: 2, dueState: 'OVERDUE', attentionReasons: ['OVERDUE', 'HIGH_PRIORITY'] } })];
+    expect(sortRecords(records, 'default', 'asc')[0].ticket).toBe('A');
   });
 
   it('returns correct empty and multi-page pagination', () => {
@@ -40,7 +37,7 @@ describe('record listing helpers', () => {
   });
 
   it('formats relative due labels', () => {
-    expect(getDueLabel(makeRecord({ due: '12/09/2026' }), now)).toBe('Vence hoje');
-    expect(getDueLabel(makeRecord({ due: '11/09/2026' }), now)).toBe('Atrasado há 1 dia');
+    expect(getDueLabel(makeRecord({ operational: { ...makeRecord({}).operational, isDueToday: true, dueState: 'DUE_TODAY' } }))).toBe('Vence hoje');
+    expect(getDueLabel(makeRecord({ operational: { ...makeRecord({}).operational, isOverdue: true, overdueDays: 1, dueState: 'OVERDUE' } }))).toBe('Atrasado há 1 dia');
   });
 });

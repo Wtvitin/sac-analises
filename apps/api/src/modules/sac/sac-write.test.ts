@@ -39,7 +39,7 @@ describe('SAC creation and editing persistence (isolated)', () => {
     mock.sacRecord.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce(null);
     mock.sacRecord.create.mockResolvedValue({ id: 'sac-1' }); mock.sacRecord.findUniqueOrThrow.mockResolvedValue(saved);
     const result = await createSacRecord(createSacRecordSchema.parse(input), 'admin-1', 'b5215944-a474-4b7f-9efe-f9d3e80b7c1d');
-    expect(result).toEqual({ record: saved, created: true });
+    expect(result).toMatchObject({ record: saved, created: true });
     expect(mock.sacRecord.create.mock.calls[0][0].data).toMatchObject({ ticket: 'SAC-2026-0007', customerId: 'customer-1', channel: 'E-mail', createdById: 'admin-1' });
     expect(mock.database.activityLog.create.mock.calls[0][0].data).toMatchObject({ recordId: 'sac-1', eventType: 'CREATED' });
   });
@@ -47,7 +47,7 @@ describe('SAC creation and editing persistence (isolated)', () => {
   it('reports a concurrent idempotent replay instead of duplicating the record', async () => {
     const replay = { id: 'sac-existing', ticket: 'SAC-2026-0006' };
     mock.sacRecord.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce(replay);
-    await expect(createSacRecord(createSacRecordSchema.parse(input), 'admin-1', 'dc81f9a5-8383-452b-81f9-b6fc78e73df8')).resolves.toEqual({ record: replay, created: false });
+    await expect(createSacRecord(createSacRecordSchema.parse(input), 'admin-1', 'dc81f9a5-8383-452b-81f9-b6fc78e73df8')).resolves.toMatchObject({ record: replay, created: false });
     expect(mock.sacRecord.create).not.toHaveBeenCalled();
   });
 
@@ -56,7 +56,7 @@ describe('SAC creation and editing persistence (isolated)', () => {
     mock.sacRecord.findFirst.mockResolvedValue({ ...updateSacRecordSchema.parse({ ...input, updatedAt }), id: 'sac-1', channelId: 'channel-1', items: [], _count: { attachments: 0 } });
     mock.sacRecord.updateMany.mockResolvedValue({ count: 1 }); mock.sacRecord.findUniqueOrThrow.mockResolvedValue(saved);
     const edit = updateSacRecordSchema.parse({ ...input, updatedAt, items: [{ code: 'SKU-1', description: 'Produto teste', quantity: 2 }] });
-    await expect(updateSacRecord('sac-1', edit, 'admin-1')).resolves.toEqual(saved);
+    await expect(updateSacRecord('sac-1', edit, 'admin-1')).resolves.toMatchObject(saved);
     expect(mock.database.sacItem.deleteMany).toHaveBeenCalledWith({ where: { recordId: 'sac-1' } });
     expect(mock.database.sacItem.createMany.mock.calls[0][0].data[0]).toMatchObject({ recordId: 'sac-1', code: 'SKU-1', quantity: 2 });
     expect(mock.database.activityLog.create.mock.calls[0][0].data).toMatchObject({ eventType: 'UPDATED', before: { itemCount: 0 }, after: { itemCount: 1 } });

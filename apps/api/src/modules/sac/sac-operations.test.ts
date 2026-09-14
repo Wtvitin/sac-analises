@@ -10,7 +10,7 @@ const mock = vi.hoisted(() => {
 });
 
 vi.mock('../../lib/prisma.js', () => ({ prisma: { ...mock.database, $transaction: mock.transaction } }));
-import { addSacComment, assignSacRecord, changeSacDueDate, changeSacPriority, changeSacStatus, takeSacRecord } from './sac.service.js';
+import { addSacComment, assignSacRecord, changeSacDueDate, changeSacPriority, changeSacStatus, getSacRecord, takeSacRecord } from './sac.service.js';
 
 const updatedAt = new Date('2026-09-14T12:00:00Z');
 const current = {
@@ -29,11 +29,18 @@ describe('operações persistentes do caso (isoladas)', () => {
 
   it('atribui e assume casos com auditoria', async () => {
     await assignSacRecord('sac-1', { updatedAt, assigneeId: 'analyst-1' }, 'admin-1');
-    expect(mock.database.sacRecord.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: { assigneeId: 'analyst-1' } }));
+    expect(mock.database.sacRecord.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ assigneeId: 'analyst-1' }) }));
     expect(mock.database.activityLog.create).toHaveBeenLastCalledWith({ data: expect.objectContaining({ eventType: 'ASSIGNED' }) });
+    expect(mock.database.sacRecord.updateMany.mock.calls[0][0].data.lastOperationalActivityAt).toBe(mock.database.activityLog.create.mock.calls[0][0].data.createdAt);
     vi.clearAllMocks(); mock.database.sacRecord.findFirst.mockResolvedValue(current); mock.database.sacRecord.updateMany.mockResolvedValue({ count: 1 }); mock.database.sacRecord.findUniqueOrThrow.mockResolvedValue(current); mock.database.user.findUnique.mockResolvedValue({ id: 'analyst-1', name: 'Ana Analista', active: true, approvedAt: updatedAt, role: 'ANALYST' });
     await takeSacRecord('sac-1', { updatedAt }, 'analyst-1');
     expect(mock.database.activityLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({ eventType: 'CASE_TAKEN' }) });
+  });
+
+  it('não altera a atividade operacional ao somente consultar um caso', async () => {
+    await getSacRecord('sac-1');
+    expect(mock.database.sacRecord.updateMany).not.toHaveBeenCalled();
+    expect(mock.database.activityLog.create).not.toHaveBeenCalled();
   });
 
   it('exige justificativa ao reduzir prioridade e ao prorrogar prazo', async () => {

@@ -100,6 +100,7 @@ model SacRecord {
   activities       ActivityLog[]
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
+  lastOperationalActivityAt DateTime @default(now())
   archivedAt       DateTime?
 
   @@index([orderNumber])
@@ -111,6 +112,7 @@ model SacRecord {
   @@index([channelId])
   @@index([openedAt])
   @@index([dueAt])
+  @@index([status, lastOperationalActivityAt])
 }
 
 model SacItem {
