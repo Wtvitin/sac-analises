@@ -1,10 +1,20 @@
-import { Router } from 'express';
-import { z } from 'zod';
+import { Router, type NextFunction, type Request, type Response } from 'express';
+import { requireAuth, requirePermission } from '../auth/auth.middleware.js';
+import { approveUserSchema, changeRoleSchema, deactivateUserSchema, listUsersSchema, reactivateUserSchema, rejectUserSchema, userIdSchema } from './users.schema.js';
+import { approveUser, changeUserRole, deactivateUser, listUserAudits, listUsers, reactivateUser, rejectUser, teamSummary, UserManagementError } from './users.service.js';
 import { prisma } from '../../lib/prisma.js';
-import { requireAuth, requireRole } from '../auth/auth.middleware.js';
 
 export const usersRouter = Router();
 usersRouter.use(requireAuth);
-usersRouter.get('/assignable', async (_req, res) => { const users = await prisma.user.findMany({ where: { active: true, approvedAt: { not: null }, role: { in: ['ADMIN', 'ANALYST'] } }, select: { id: true, name: true }, orderBy: { name: 'asc' } }); res.json({ data: users }); });
-usersRouter.get('/', requireRole('ADMIN'), async (_req, res) => { const users = await prisma.user.findMany({ select: { id: true, name: true, email: true, role: true, active: true, approvedAt: true, createdAt: true }, orderBy: { name: 'asc' } }); res.json({ data: users }); });
-usersRouter.patch('/:id/access', requireRole('ADMIN'), async (req, res) => { const input = z.object({ role: z.enum(['ADMIN', 'ANALYST', 'VIEWER']).optional(), active: z.boolean().optional(), approved: z.boolean().optional() }).parse(req.body); const user = await prisma.user.update({ where: { id: String(req.params.id) }, data: { role: input.role, active: input.active, ...(input.approved !== undefined ? { approvedAt: input.approved ? new Date() : null } : {}) }, select: { id: true, name: true, email: true, role: true, active: true, approvedAt: true } }); res.json({ data: user }); });
+usersRouter.get('/assignable', async (_req, res) => { const users = await prisma.user.findMany({ where: { active: true, approvedAt: { not: null }, rejectedAt: null, role: { in: ['ADMIN', 'ANALYST'] } }, select: { id: true, name: true }, orderBy: { name: 'asc' } }); res.json({ data: users }); });
+usersRouter.use(requirePermission('users:manage'));
+usersRouter.get('/summary', async (_req, res) => res.json({ data: await teamSummary() }));
+usersRouter.get('/', async (req, res) => res.json({ data: await listUsers(listUsersSchema.parse(req.query)) }));
+usersRouter.post('/:id/approve', async (req, res) => { const input = approveUserSchema.parse(req.body); res.json({ data: await approveUser(userIdSchema.parse(req.params.id), input.role, req.auth!.userId) }); });
+usersRouter.post('/:id/reject', async (req, res) => { const input = rejectUserSchema.parse(req.body); res.json({ data: await rejectUser(userIdSchema.parse(req.params.id), input.justification, req.auth!.userId) }); });
+usersRouter.patch('/:id/role', async (req, res) => res.json({ data: await changeUserRole(userIdSchema.parse(req.params.id), changeRoleSchema.parse(req.body), req.auth!.userId) }));
+usersRouter.post('/:id/deactivate', async (req, res) => res.json({ data: await deactivateUser(userIdSchema.parse(req.params.id), deactivateUserSchema.parse(req.body), req.auth!.userId) }));
+usersRouter.post('/:id/reactivate', async (req, res) => { const input = reactivateUserSchema.parse(req.body); res.json({ data: await reactivateUser(userIdSchema.parse(req.params.id), input.justification, req.auth!.userId) }); });
+usersRouter.get('/:id/audits', async (req, res) => res.json({ data: await listUserAudits(userIdSchema.parse(req.params.id)) }));
+usersRouter.delete('/:id', (_req, res) => res.status(405).json({ error: { code: 'PERMANENT_DELETION_DISABLED', message: 'Use a inativação para preservar o histórico.' } }));
+usersRouter.use((error: unknown, _req: Request, res: Response, next: NextFunction) => error instanceof UserManagementError ? res.status(error.status).json({ error: { code: error.code, message: error.message } }) : next(error));

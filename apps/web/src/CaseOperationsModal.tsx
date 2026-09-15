@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { AlertTriangle, CalendarDays, CheckCircle2, FileText, LoaderCircle, MessageSquare, Paperclip, UserCheck, X } from 'lucide-react';
 import { apiRequest, type AuthUser } from './api';
 import { availableCaseActions, requiresDueDateReason, requiresPriorityReason, type CaseAction, type CaseStatus } from './case-workflow';
+import { can } from './permissions';
 import type { DetailedRecord } from './SacRecordForm';
 
 type Option = { id: string; name: string };
@@ -46,6 +47,7 @@ export function CaseOperationsModal({ recordId, user, onClose, onChanged }: { re
   const [dueAt, setDueAt] = useState(''); const [reason, setReason] = useState(''); const [solution, setSolution] = useState('');
   const [cause, setCause] = useState(''); const [area, setArea] = useState(''); const [corrective, setCorrective] = useState(''); const [confirmed, setConfirmed] = useState(false);
   const modalRef = useRef<HTMLElement>(null);
+  const canWriteCases = can(user.role, 'cases:write');
 
   const load = async () => {
     setLoading(true); setError('');
@@ -53,7 +55,7 @@ export function CaseOperationsModal({ recordId, user, onClose, onChanged }: { re
       const detail = await apiRequest<OperationalRecord>(`/sac-records/${recordId}`); setRecord(detail);
       setAssigneeId(detail.assignee?.id ?? ''); setPriority(detail.priority); setDueAt(dateInput(detail.dueAt));
       setSolution(detail.solutionSummary ?? ''); setCause(detail.identifiedCause ?? ''); setArea(detail.responsibleArea ?? ''); setCorrective(detail.correctiveAction ?? '');
-      if (user.role !== 'VIEWER') setAssignees(await apiRequest<Option[]>('/users/assignable'));
+      if (canWriteCases) setAssignees(await apiRequest<Option[]>('/users/assignable'));
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Não foi possível carregar o caso.'); }
     finally { setLoading(false); }
   };

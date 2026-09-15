@@ -10,7 +10,7 @@ import {
 import {
   SacRecordError, addSacComment, assignSacRecord, changeSacDueDate, changeSacPriority, changeSacStatus, checkExternalTicket, createSacRecord, getSacHistory, getSacRecord, listSacRecords, searchCustomers, takeSacRecord, updateSacRecord,
 } from './sac.service.js';
-import { requireRole } from '../auth/auth.middleware.js';
+import { requirePermission } from '../auth/auth.middleware.js';
 
 export const sacRouter = Router();
 
@@ -52,7 +52,7 @@ sacRouter.get('/customer-options', async (req, res, next) => {
   catch (error) { next(error); }
 });
 
-sacRouter.post('/', requireRole('ADMIN', 'ANALYST'), upload.array('files', MAX_ATTACHMENT_COUNT), async (req, res, next) => {
+sacRouter.post('/', requirePermission('cases:write'), upload.array('files', MAX_ATTACHMENT_COUNT), async (req, res, next) => {
   let stored = [] as Awaited<ReturnType<typeof persistFiles>>;
   try {
     const key = idempotencyKeySchema.parse(req.header('Idempotency-Key'));
@@ -69,7 +69,7 @@ sacRouter.get('/:id', async (req, res, next) => {
   catch (error) { next(error); }
 });
 
-sacRouter.patch('/:id', requireRole('ADMIN', 'ANALYST'), upload.array('files', MAX_ATTACHMENT_COUNT), async (req, res, next) => {
+sacRouter.patch('/:id', requirePermission('cases:write'), upload.array('files', MAX_ATTACHMENT_COUNT), async (req, res, next) => {
   let stored = [] as Awaited<ReturnType<typeof persistFiles>>;
   try {
     const input = updateSacRecordSchema.parse(parsePayload(req.body));
@@ -79,26 +79,26 @@ sacRouter.patch('/:id', requireRole('ADMIN', 'ANALYST'), upload.array('files', M
   } catch (error) { if (stored.length) await getAttachmentStorage().remove(stored); next(error); }
 });
 
-sacRouter.patch('/:id/assignee', requireRole('ADMIN', 'ANALYST'), async (req, res, next) => {
+sacRouter.patch('/:id/assignee', requirePermission('cases:write'), async (req, res, next) => {
   try { res.json({ data: await assignSacRecord(String(req.params.id), assignmentSchema.parse(req.body), req.auth!.userId) }); } catch (error) { next(error); }
 });
-sacRouter.post('/:id/take', requireRole('ADMIN', 'ANALYST'), async (req, res, next) => {
+sacRouter.post('/:id/take', requirePermission('cases:write'), async (req, res, next) => {
   try { res.json({ data: await takeSacRecord(String(req.params.id), takeCaseSchema.parse(req.body), req.auth!.userId) }); } catch (error) { next(error); }
 });
-sacRouter.patch('/:id/priority', requireRole('ADMIN', 'ANALYST'), async (req, res, next) => {
+sacRouter.patch('/:id/priority', requirePermission('cases:write'), async (req, res, next) => {
   try { res.json({ data: await changeSacPriority(String(req.params.id), priorityChangeSchema.parse(req.body), req.auth!.userId) }); } catch (error) { next(error); }
 });
-sacRouter.patch('/:id/due-date', requireRole('ADMIN', 'ANALYST'), async (req, res, next) => {
+sacRouter.patch('/:id/due-date', requirePermission('cases:write'), async (req, res, next) => {
   try { res.json({ data: await changeSacDueDate(String(req.params.id), dueDateChangeSchema.parse(req.body), req.auth!.userId) }); } catch (error) { next(error); }
 });
-sacRouter.post('/:id/comments', requireRole('ADMIN', 'ANALYST'), async (req, res, next) => {
+sacRouter.post('/:id/comments', requirePermission('cases:write'), async (req, res, next) => {
   try { res.status(201).json({ data: await addSacComment(String(req.params.id), commentSchema.parse(req.body), req.auth!.userId) }); } catch (error) { next(error); }
 });
 sacRouter.get('/:id/history', async (req, res, next) => {
   try { res.json({ data: await getSacHistory(String(req.params.id), historyQuerySchema.parse(req.query)) }); } catch (error) { next(error); }
 });
 
-sacRouter.post('/:id/status', requireRole('ADMIN', 'ANALYST'), async (req, res, next) => {
+sacRouter.post('/:id/status', requirePermission('cases:write'), async (req, res, next) => {
   try { res.json({ data: await changeSacStatus(String(req.params.id), changeStatusSchema.parse(req.body), req.auth!.userId, req.auth!.role as 'ADMIN' | 'ANALYST') }); }
   catch (error) { next(error); }
 });

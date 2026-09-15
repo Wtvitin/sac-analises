@@ -147,6 +147,7 @@
 
 .auth-feedback { min-height: 0; }
 .auth-message { margin: 0 0 14px; padding: 10px 12px; border: 1px solid; border-radius: 8px; font-size: 12px; line-height: 1.45; }
+.auth-message strong { display: block; margin-bottom: 3px; }
 .auth-message-error { border-color: #f0bdc9; color: #97233c; background: #fff4f6; }
 .auth-message-info { border-color: #c9dbea; color: #315875; background: #f2f8fc; }
 .auth-message-success { border-color: #bde0d1; color: #176343; background: #f0faf5; }

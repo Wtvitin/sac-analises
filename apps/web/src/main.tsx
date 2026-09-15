@@ -10,5 +10,7 @@ import './records.css';
 import './catalog.css';
 import './sac-form.css';
 import './notifications.css';
+import './team.css';
+import './profile.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><AuthGateway /></React.StrictMode>);

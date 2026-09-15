@@ -3,12 +3,12 @@ import { AlertTriangle, Bell, CalendarClock, CheckCheck, Clock3, MessageSquare, 
 import { apiRequest } from './api';
 import { notificationCountLabel, notificationEmptyCopy } from './notification-center.utils';
 
-type NotificationType = 'ASSIGNED' | 'ASSIGNEE_CHANGED' | 'COMMENT_ADDED' | 'STATUS_CHANGED' | 'PRIORITY_RAISED' | 'DUE_DATE_CHANGED' | 'NEAR_DUE' | 'DUE_TODAY' | 'OVERDUE' | 'STALE' | 'UNASSIGNED' | 'REOPENED' | 'CANCELLED' | 'COMPLETED';
-type NotificationItem = { id: string; type: NotificationType; title: string; summary: string; createdAt: string; readAt: string | null; record: { id: string; ticket: string; archivedAt: string | null } | null };
+type NotificationType = 'ACCESS_REQUEST' | 'ASSIGNED' | 'ASSIGNEE_CHANGED' | 'COMMENT_ADDED' | 'STATUS_CHANGED' | 'PRIORITY_RAISED' | 'DUE_DATE_CHANGED' | 'NEAR_DUE' | 'DUE_TODAY' | 'OVERDUE' | 'STALE' | 'UNASSIGNED' | 'REOPENED' | 'CANCELLED' | 'COMPLETED';
+type NotificationItem = { id: string; type: NotificationType; title: string; summary: string; metadata?: { requestUserId?: string } | null; createdAt: string; readAt: string | null; record: { id: string; ticket: string; archivedAt: string | null } | null };
 type NotificationPage = { items: NotificationItem[]; total: number; page: number; pageSize: number };
 type Filter = 'all' | 'unread';
 
-const icons: Partial<Record<NotificationType, typeof Bell>> = { ASSIGNED: UserCheck, ASSIGNEE_CHANGED: UserCheck, COMMENT_ADDED: MessageSquare, DUE_DATE_CHANGED: CalendarClock, NEAR_DUE: CalendarClock, DUE_TODAY: CalendarClock, OVERDUE: AlertTriangle, STALE: Clock3, UNASSIGNED: UserCheck, REOPENED: RotateCcw };
+const icons: Partial<Record<NotificationType, typeof Bell>> = { ACCESS_REQUEST: UserCheck, ASSIGNED: UserCheck, ASSIGNEE_CHANGED: UserCheck, COMMENT_ADDED: MessageSquare, DUE_DATE_CHANGED: CalendarClock, NEAR_DUE: CalendarClock, DUE_TODAY: CalendarClock, OVERDUE: AlertTriangle, STALE: Clock3, UNASSIGNED: UserCheck, REOPENED: RotateCcw };
 
 function relativeDate(value: string, now = new Date()) {
   const date = new Date(value); const minutes = Math.max(0, Math.floor((now.getTime() - date.getTime()) / 60_000));
@@ -17,9 +17,9 @@ function relativeDate(value: string, now = new Date()) {
   const days = Math.floor(hours / 24); return days < 7 ? `Há ${days} ${days === 1 ? 'dia' : 'dias'}` : date.toLocaleDateString('pt-BR');
 }
 
-export function NotificationCenter({ open, onOpenChange, triggerRef, anchorRef, refreshKey, onOpenRecord, onMessage }: {
+export function NotificationCenter({ open, onOpenChange, triggerRef, anchorRef, refreshKey, onOpenRecord, onOpenTeam, onMessage }: {
   open: boolean; onOpenChange: (open: boolean) => void; triggerRef: RefObject<HTMLButtonElement | null>; anchorRef: RefObject<HTMLDivElement | null>;
-  refreshKey: unknown; onOpenRecord: (recordId: string) => Promise<void>; onMessage: (message: string) => void;
+  refreshKey: unknown; onOpenRecord: (recordId: string) => Promise<void>; onOpenTeam: () => void; onMessage: (message: string) => void;
 }) {
   const [unread, setUnread] = useState(0); const [filter, setFilter] = useState<Filter>('all'); const [items, setItems] = useState<NotificationItem[]>([]); const [total, setTotal] = useState(0); const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false); const [error, setError] = useState(''); const [announcement, setAnnouncement] = useState(''); const panelRef = useRef<HTMLElement>(null); const lastUnreadRef = useRef<number | undefined>(undefined);
@@ -43,7 +43,7 @@ export function NotificationCenter({ open, onOpenChange, triggerRef, anchorRef, 
   const close = () => { onOpenChange(false); requestAnimationFrame(() => triggerRef.current?.focus()); };
   const markAll = async () => { try { const result = await apiRequest<{ updated: number }>('/notifications/read-all', { method: 'PATCH' }); const readAt = new Date().toISOString(); setItems(current => filter === 'unread' ? [] : current.map(item => ({ ...item, readAt: item.readAt ?? readAt }))); setTotal(value => filter === 'unread' ? Math.max(0, value - result.updated) : value); lastUnreadRef.current = 0; setUnread(0); setAnnouncement('Todas as notificações foram marcadas como lidas.'); } catch { setError('Não foi possível marcar as notificações como lidas.'); } };
   const activate = async (item: NotificationItem) => {
-    try { if (!item.readAt) { const saved = await apiRequest<NotificationItem>(`/notifications/${item.id}/read`, { method: 'PATCH' }); setItems(current => current.map(value => value.id === item.id ? saved : value)); setUnread(value => { const next = Math.max(0, value - 1); lastUnreadRef.current = next; return next; }); } onOpenChange(false); if (item.record?.id && !item.record.archivedAt) await onOpenRecord(item.record.id); else onMessage('O caso relacionado não está mais disponível.'); }
+    try { if (!item.readAt) { const saved = await apiRequest<NotificationItem>(`/notifications/${item.id}/read`, { method: 'PATCH' }); setItems(current => current.map(value => value.id === item.id ? saved : value)); setUnread(value => { const next = Math.max(0, value - 1); lastUnreadRef.current = next; return next; }); } onOpenChange(false); if (item.type === 'ACCESS_REQUEST') onOpenTeam(); else if (item.record?.id && !item.record.archivedAt) await onOpenRecord(item.record.id); else onMessage('O caso relacionado não está mais disponível.'); }
     catch { onOpenChange(false); onMessage('Não foi possível abrir o caso relacionado.'); }
   };
   const emptyCopy = notificationEmptyCopy(filter);

@@ -48,7 +48,16 @@ try {
 }
 ```
 
-O comando cria somente o primeiro usuário e bloqueia execuções posteriores sem alterar a conta existente. Por padrão, o cadastro público fica desabilitado. Quando habilitado, novos usuários recebem o perfil Consulta e podem exigir aprovação administrativa; nunca escolhem o perfil Administrador.
+O comando cria somente o primeiro usuário e bloqueia execuções posteriores sem alterar a conta existente. A solicitação pública de acesso é controlada exclusivamente no backend por `REGISTRATION_ENABLED` e fica desabilitada por padrão, inclusive em produção. Quando habilitada, toda nova conta nasce inativa, não aprovada e com perfil Consulta; o solicitante nunca escolhe seu perfil. A resposta pública é genérica para não revelar se um e-mail já está cadastrado.
+
+## Gestão de acesso
+
+- Administradores aprovam solicitações como Analista ou Consulta, recusam sem excluir o registro e gerenciam perfil e estado.
+- A API consulta o estado atual e a versão de segurança do usuário em toda requisição autenticada. Inativação, mudança de perfil e alteração de senha invalidam tokens anteriores imediatamente.
+- O último administrador ativo e aprovado é protegido por lock transacional no PostgreSQL.
+- Ao inativar alguém com casos abertos, o administrador deve transferi-los para um responsável elegível ou confirmar que ficarão sem responsável.
+- Alterações administrativas e de senha são auditadas sem armazenar senhas, hashes, tokens ou credenciais.
+- O último acesso é atualizado somente após login bem-sucedido e exibido em `America/Sao_Paulo`.
 
 Frontend: `http://localhost:5173`  
 API: `http://localhost:3333`  

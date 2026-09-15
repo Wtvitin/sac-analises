@@ -28,6 +28,7 @@ enum Priority {
 }
 
 enum NotificationType {
+  ACCESS_REQUEST
   ASSIGNED
   ASSIGNEE_CHANGED
   COMMENT_ADDED
@@ -44,6 +45,18 @@ enum NotificationType {
   COMPLETED
 }
 
+enum AdminAuditType {
+  ACCESS_REQUESTED
+  ACCESS_APPROVED
+  ACCESS_REJECTED
+  ROLE_CHANGED
+  USER_DEACTIVATED
+  USER_REACTIVATED
+  CASES_TRANSFERRED
+  PASSWORD_CHANGED
+  LAST_ADMIN_BLOCKED
+}
+
 model User {
   id            String        @id @default(cuid())
   name          String
@@ -52,14 +65,26 @@ model User {
   role          UserRole      @default(ANALYST)
   active        Boolean       @default(true)
   approvedAt    DateTime?
+  approvedById  String?
+  approvedBy    User?         @relation("UserApprovals", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedUsers User[]        @relation("UserApprovals")
+  rejectedAt    DateTime?
+  rejectionReason String?
+  tokenVersion  Int           @default(0)
+  lastLoginAt   DateTime?
   timezone      String        @default("America/Sao_Paulo")
   assignedCases SacRecord[]   @relation("Assignee")
   createdCases  SacRecord[]   @relation("Creator")
   comments      Comment[]
   activities    ActivityLog[]
   notifications Notification[]
+  auditsAuthored AdminAudit[] @relation("AuditActor")
+  auditsReceived AdminAudit[] @relation("AuditTarget")
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
+
+  @@index([active, approvedAt, rejectedAt])
+  @@index([role, active, approvedAt])
 }
 
 model Customer {
@@ -248,4 +273,20 @@ model Notification {
   @@index([recipientId, createdAt])
   @@index([recipientId, readAt, createdAt])
   @@index([recordId])
+}
+
+model AdminAudit {
+  id           String         @id @default(cuid())
+  type         AdminAuditType
+  actorId      String?
+  actor        User?          @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  targetUserId String
+  targetUser   User           @relation("AuditTarget", fields: [targetUserId], references: [id])
+  justification String?
+  metadata     Json?
+  createdAt    DateTime       @default(now())
+
+  @@index([targetUserId, createdAt])
+  @@index([actorId, createdAt])
+  @@index([type, createdAt])
 }
