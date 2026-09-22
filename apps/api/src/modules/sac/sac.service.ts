@@ -31,7 +31,10 @@ const recordInclude = {
   channelCatalog: true,
   assignee: { select: { id: true, name: true, active: true } },
   items: { orderBy: { createdAt: 'asc' as const } },
-  attachments: { orderBy: { createdAt: 'asc' as const } },
+  attachments: {
+    orderBy: { createdAt: 'asc' as const },
+    include: { author: { select: { id: true, name: true } } },
+  },
   comments: { orderBy: { createdAt: 'desc' as const }, take: 20, include: { author: { select: { id: true, name: true } } } },
   activities: { orderBy: { createdAt: 'desc' as const }, take: 20, include: { actor: { select: { id: true, name: true } } } },
 } satisfies Prisma.SacRecordInclude;
@@ -221,7 +224,17 @@ export async function createSacRecord(input: CreateInput, actorId: string, idemp
           channel: channel.name, channelId: channel.id, openedAt: input.openedAt, dueAt: input.dueAt,
           customerId: customer.id, reasonId: reason.id, subreasonId: input.subreasonId, assigneeId: input.assigneeId, createdById: actorId, lastOperationalActivityAt: activityAt,
           items: { create: input.items.map(item => ({ code: item.code, description: item.description, batch: item.batch, quantity: item.quantity, note: item.note })) },
-          attachments: { create: attachments },
+          attachments: {
+            create: attachments.map(att => ({
+              originalName: att.originalName,
+              mimeType: att.mimeType,
+              sizeBytes: att.sizeBytes,
+              storageKey: att.storageKey,
+              sha256: att.sha256 ?? '',
+              storageProvider: att.storageProvider ?? 'local',
+              authorId: att.authorId ?? actorId,
+            })),
+          },
         },
       });
       await tx.activityLog.create({ data: { recordId: created.id, actorId, eventType: 'CREATED', summary: `Registro ${ticket} criado. Responsável: ${assignee?.name ?? 'Sem responsável'}. Status inicial: PENDING.`, createdAt: activityAt } });
@@ -260,7 +273,20 @@ export async function updateSacRecord(recordId: string, input: UpdateInput, acto
     if (updated.count !== 1) throw new SacRecordError('STALE_SAC_RECORD', 'Este registro foi atualizado por outro usuário. Recarregue os dados antes de salvar novamente.', 409);
     await tx.sacItem.deleteMany({ where: { recordId } });
     if (input.items.length) await tx.sacItem.createMany({ data: input.items.map(item => ({ recordId, code: item.code, description: item.description, batch: item.batch, quantity: item.quantity, note: item.note })) });
-    if (attachments.length) await tx.attachment.createMany({ data: attachments.map(file => ({ ...file, recordId })) });
+    if (attachments.length) {
+      await tx.attachment.createMany({
+        data: attachments.map(file => ({
+          originalName: file.originalName,
+          mimeType: file.mimeType,
+          sizeBytes: file.sizeBytes,
+          storageKey: file.storageKey,
+          sha256: file.sha256 ?? '',
+          storageProvider: file.storageProvider ?? 'local',
+          authorId: file.authorId ?? actorId,
+          recordId,
+        })),
+      });
+    }
     await tx.activityLog.create({
       data: {
         recordId, actorId, eventType: 'UPDATED', summary: 'Dados do registro atualizados.',

@@ -84,6 +84,8 @@ model User {
   auditsAuthored AdminAudit[] @relation("AuditActor")
   auditsReceived AdminAudit[] @relation("AuditTarget")
   sessions      AuthSession[]
+  attachmentsAuthored Attachment[] @relation("AttachmentAuthor")
+  attachmentsDeleted  Attachment[] @relation("AttachmentDeleter")
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 
@@ -234,15 +236,35 @@ model Comment {
   @@index([recordId, createdAt])
 }
 
+enum AttachmentStatus {
+  ACTIVE
+  QUARANTINED
+  PENDING_DELETION
+}
+
 model Attachment {
-  id           String    @id @default(cuid())
-  recordId     String
-  record       SacRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
-  originalName String
-  mimeType     String
-  sizeBytes    Int
-  storageKey   String
-  createdAt    DateTime  @default(now())
+  id              String           @id @default(cuid())
+  recordId        String
+  record          SacRecord        @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  originalName    String
+  mimeType        String
+  sizeBytes       Int
+  storageKey      String
+  sha256          String           @default("")
+  storageProvider String           @default("local")
+  status          AttachmentStatus @default(ACTIVE)
+  scanStatus      String           @default("NOT_SCANNED")
+  authorId        String?
+  author          User?            @relation("AttachmentAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  deletedAt       DateTime?
+  deletedById     String?
+  deletedBy       User?            @relation("AttachmentDeleter", fields: [deletedById], references: [id], onDelete: SetNull)
+  createdAt       DateTime         @default(now())
+
+  @@index([recordId, status])
+  @@index([storageKey])
+  @@index([sha256])
+  @@index([authorId])
 }
 
 model ActivityLog {

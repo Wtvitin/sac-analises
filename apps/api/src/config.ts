@@ -14,7 +14,7 @@ export function validateEnvironment(environment: NodeJS.ProcessEnv = process.env
   }
   const port = Number(environment.PORT ?? 3333);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT deve ser uma porta TCP válida.');
-  return { port, ...getSecurityConfig(environment) };
+  return { port, ...getSecurityConfig(environment), storage: getStorageConfig(environment) };
 }
 
 function positiveInteger(value: string | undefined, fallback: number, name: string, maximum: number) {
@@ -38,3 +38,33 @@ export function getSecurityConfig(environment: NodeJS.ProcessEnv = process.env) 
     refreshTokenDays: positiveInteger(environment.REFRESH_TOKEN_TTL_DAYS, 30, 'REFRESH_TOKEN_TTL_DAYS', 90),
   };
 }
+
+export function getStorageConfig(environment: NodeJS.ProcessEnv = process.env) {
+  const production = environment.NODE_ENV === 'production';
+  const driver = (environment.STORAGE_DRIVER || environment.UPLOAD_STORAGE_DRIVER || 'local').toLowerCase().trim();
+
+  if (driver !== 'local' && driver !== 's3') {
+    throw new Error('STORAGE_DRIVER deve ser "local" ou "s3".');
+  }
+
+  const localUploadDir = environment.LOCAL_UPLOAD_DIR?.trim() || environment.UPLOAD_DIR?.trim() || '';
+
+  if (production && driver === 'local' && !localUploadDir) {
+    throw new Error('Em produção, o armazenamento local de evidências exige LOCAL_UPLOAD_DIR configurado.');
+  }
+
+  if (production && driver === 's3') {
+    if (!environment.S3_BUCKET?.trim() || !environment.S3_REGION?.trim()) {
+      throw new Error('Em produção com storage S3, S3_BUCKET e S3_REGION são obrigatórios.');
+    }
+  }
+
+  return {
+    driver,
+    localUploadDir,
+    maxFileSize: 10 * 1024 * 1024,
+    maxAttachmentCount: 5,
+    tempExpiryMinutes: positiveInteger(environment.TEMP_UPLOAD_EXPIRY_MINUTES, 60, 'TEMP_UPLOAD_EXPIRY_MINUTES', 1440),
+  };
+}
+

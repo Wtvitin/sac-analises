@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { AlertTriangle, CalendarDays, CheckCircle2, FileText, LoaderCircle, MessageSquare, Paperclip, UserCheck, X } from 'lucide-react';
-import { apiRequest, type AuthUser } from './api';
+import { AlertTriangle, CalendarDays, CheckCircle2, Download, FileText, LoaderCircle, MessageSquare, Paperclip, UserCheck, X } from 'lucide-react';
+import { apiRequest, downloadFile, type AuthUser } from './api';
 import { availableCaseActions, requiresDueDateReason, requiresPriorityReason, type CaseAction, type CaseStatus } from './case-workflow';
 import { can } from './permissions';
 import type { DetailedRecord } from './SacRecordForm';
@@ -46,8 +46,21 @@ export function CaseOperationsModal({ recordId, user, onClose, onChanged }: { re
   const [comment, setComment] = useState(''); const [assigneeId, setAssigneeId] = useState(''); const [priority, setPriority] = useState<OperationalRecord['priority']>('MEDIUM');
   const [dueAt, setDueAt] = useState(''); const [reason, setReason] = useState(''); const [solution, setSolution] = useState('');
   const [cause, setCause] = useState(''); const [area, setArea] = useState(''); const [corrective, setCorrective] = useState(''); const [confirmed, setConfirmed] = useState(false);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const modalRef = useRef<HTMLElement>(null);
   const canWriteCases = can(user.role, 'cases:write');
+
+  const handleDownload = async (attachmentId: string, filename: string) => {
+    try {
+      setDownloadingId(attachmentId);
+      setError('');
+      await downloadFile(`/attachments/${attachmentId}/download`, filename);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Falha ao baixar arquivo.');
+    } finally {
+      setDownloadingId(null);
+    }
+  };
 
   const load = async () => {
     setLoading(true); setError('');
@@ -119,7 +132,7 @@ export function CaseOperationsModal({ recordId, user, onClose, onChanged }: { re
     <div className="modal-body operational-body">{error && <div className="inline-error" role="alert">{error}<button onClick={() => setError('')}>Fechar</button></div>}
       {tab === 'Detalhes' && <section className="case-details"><dl><div><dt>Canal</dt><dd>{record.channelCatalog?.name ?? 'Não informado'}</dd></div><div><dt>Abertura</dt><dd>{formatDate(record.openedAt)}</dd></div><div><dt>Última atualização</dt><dd>{formatDate(record.updatedAt)}</dd></div><div><dt>Protocolo externo</dt><dd>{record.externalTicket ?? 'Não informado'}</dd></div></dl><article><strong>Descrição</strong><p>{record.description}</p></article>{record.internalNote && <article><strong>Observação interna</strong><p>{record.internalNote}</p></article>}<div className="case-conclusion"><article><strong>Resumo da solução</strong><p>{record.solutionSummary || 'Ainda não informado.'}</p></article><article><strong>Causa identificada</strong><p>{record.identifiedCause || 'Ainda não informada.'}</p></article><article><strong>Área responsável</strong><p>{record.responsibleArea || 'Ainda não informada.'}</p></article><article><strong>Ação corretiva</strong><p>{record.correctiveAction || 'Ainda não informada.'}</p></article></div></section>}
       {tab === 'Itens' && <section className="modal-section"><div className="section-heading"><div><h3>Itens relacionados</h3><p>{record.items.length} item(ns) registrado(s)</p></div></div>{record.items.length ? <div className="compact-table"><table><thead><tr><th>Código</th><th>Descrição</th><th>Lote</th><th>Quantidade</th></tr></thead><tbody>{record.items.map(item => <tr key={item.id}><td>{item.code}</td><td>{item.description}</td><td>{item.batch ?? '—'}</td><td>{item.quantity}</td></tr>)}</tbody></table></div> : <div className="empty-state"><FileText /><strong>Nenhum item relacionado</strong></div>}</section>}
-      {tab === 'Evidências' && <section className="modal-section"><div className="section-heading"><div><h3>Evidências anexadas</h3><p>Arquivos preservados no registro</p></div></div>{record.attachments.length ? <div className="attachment-list">{record.attachments.map(file => <article key={file.id}><span className="file-icon"><Paperclip /></span><div><strong>{file.originalName}</strong><small>{file.mimeType} · {Math.ceil(file.sizeBytes / 1024)} KB</small></div></article>)}</div> : <div className="empty-state"><Paperclip /><strong>Nenhuma evidência anexada</strong></div>}</section>}
+      {tab === 'Evidências' && <section className="modal-section"><div className="section-heading"><div><h3>Evidências anexadas</h3><p>Arquivos preservados no registro ({record.attachments.length})</p></div></div>{record.attachments.length ? <div className="attachment-list">{record.attachments.map(file => { const isQuarantined = file.status && file.status !== 'ACTIVE'; return <article key={file.id} className={`attachment-item${isQuarantined ? ' attachment-unavailable' : ''}`}><span className="file-icon"><Paperclip aria-hidden="true" /></span><div className="attachment-details"><strong>{file.originalName}</strong><small>{file.mimeType} · {(file.sizeBytes / 1024).toFixed(1)} KB{file.author?.name ? ` · Enviado por ${file.author.name}` : ''}{file.createdAt ? ` · ${formatDate(file.createdAt)}` : ''}</small>{isQuarantined && <span className="badge badge-pendente" style={{ marginTop: '5px' }}>Indisponível (Quarentena)</span>}</div><button type="button" className="secondary attachment-download-btn" disabled={Boolean(isQuarantined || downloadingId === file.id)} onClick={() => handleDownload(file.id, file.originalName)} aria-label={`Baixar evidência ${file.originalName}`}>{downloadingId === file.id ? <LoaderCircle className="spin" aria-hidden="true" /> : <Download aria-hidden="true" />}<span>{downloadingId === file.id ? 'Baixando...' : 'Baixar'}</span></button></article>; })}</div> : <div className="empty-state"><Paperclip /><strong>Nenhuma evidência anexada</strong><span>Nenhum arquivo de evidência foi anexado a este caso.</span></div>}</section>}
       {tab === 'Histórico' && <section className="history-section"><form className="comment-form" onSubmit={sendComment}><label htmlFor="case-comment">Comentário interno</label><textarea id="case-comment" value={comment} maxLength={4000} disabled={user.role === 'VIEWER'} onChange={event => setComment(event.target.value)} placeholder={user.role === 'VIEWER' ? 'Perfil de consulta não pode comentar.' : 'Registre uma atualização objetiva...'} /><div><small>{comment.length}/4000</small>{user.role !== 'VIEWER' && <button className="primary" disabled={!comment.trim() || saving}><MessageSquare />Adicionar comentário</button>}</div></form><div className="timeline timeline-expanded"><h3>Linha do tempo</h3>{timeline.map(item => 'comment' in item ? <div key={item.id}><i className="dot magenta" /><time>{formatDate(item.createdAt)}</time><p><strong>Comentário de {item.comment.author.name}</strong><span>{item.comment.body}</span></p></div> : <div key={item.id}><i className="dot" /><time>{formatDate(item.createdAt)}</time><p><strong>{item.activity.summary}</strong><span>Por {item.activity.actor.name}</span></p></div>)}{!timeline.length && <div className="empty-state"><CheckCircle2 /><strong>Nenhum evento registrado</strong></div>}</div>{history && history.page * history.pageSize < history.total && <button className="secondary history-more" onClick={() => setHistoryPage(value => value + 1)}>Carregar mais</button>}</section>}
     </div>
     <footer className="operational-actions">{actions.map(action => <button type="button" key={action} className={action === 'cancel' ? 'sac-danger-action' : 'primary'} onClick={() => begin(action)}>{operationLabels[action]}</button>)}</footer>

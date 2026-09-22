@@ -51,3 +51,50 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}) {
   }
   return body.data as T;
 }
+
+export async function downloadFile(path: string, fallbackFilename = 'anexo'): Promise<void> {
+  let response = await fetchApi(path, { method: 'GET' });
+  if (response.status === 401) {
+    try {
+      await refreshSession();
+      response = await fetchApi(path, { method: 'GET' });
+    } catch {
+      sessionExpiredHandler?.();
+      throw new Error('Sua sessão expirou. Entre novamente.');
+    }
+  }
+
+  if (!response.ok) {
+    const errorBody = await response.json().catch(() => ({}));
+    throw new Error(errorBody.error?.message ?? 'Não foi possível baixar o arquivo.');
+  }
+
+  let filename = fallbackFilename;
+  const disposition = response.headers.get('content-disposition');
+  if (disposition) {
+    const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8Match && utf8Match[1]) {
+      try {
+        filename = decodeURIComponent(utf8Match[1]);
+      } catch {
+        // Fallback
+      }
+    } else {
+      const standardMatch = disposition.match(/filename="?([^";]+)"?/i);
+      if (standardMatch && standardMatch[1]) {
+        filename = standardMatch[1];
+      }
+    }
+  }
+
+  const blob = await response.blob();
+  const blobUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = blobUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(blobUrl);
+}
+

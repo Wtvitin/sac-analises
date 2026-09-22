@@ -29,3 +29,55 @@ describe('cliente HTTP com sessão por cookie', () => {
     await expect(apiRequest('/protected')).rejects.toThrow(/sessão expirou/i); expect(expired).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('downloadFile - download autenticado e seguro', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('baixa o arquivo criando link temporário com nome extraído do Content-Disposition RFC 5987', async () => {
+    const clickMock = vi.fn();
+    const fakeAnchor = { href: '', download: '', click: clickMock };
+    const appendChildMock = vi.fn();
+    const removeChildMock = vi.fn();
+    const createObjectURLMock = vi.fn().mockReturnValue('blob:test-url');
+    const revokeObjectURLMock = vi.fn();
+
+    vi.stubGlobal('URL', { createObjectURL: createObjectURLMock, revokeObjectURL: revokeObjectURLMock });
+    vi.stubGlobal('window', { URL: { createObjectURL: createObjectURLMock, revokeObjectURL: revokeObjectURLMock } });
+    vi.stubGlobal('document', {
+      cookie: 'sac_csrf=csrf-test-value',
+      createElement: vi.fn().mockImplementation((tag: string) => (tag === 'a' ? fakeAnchor : {})),
+      body: {
+        appendChild: appendChildMock,
+        removeChild: removeChildMock,
+      },
+    });
+
+    const headers = new Headers();
+    headers.set('content-disposition', "attachment; filename=\"relatorio.pdf\"; filename*=UTF-8''relat%C3%B3rio%20final.pdf");
+    const fakeBlob = new Blob(['%PDF-1.4 test'], { type: 'application/pdf' });
+    const response = new Response(fakeBlob, { status: 200, headers });
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
+
+    const { downloadFile } = await import('./api');
+    await downloadFile('/attachments/att-1/download', 'fallback.pdf');
+
+    expect(createObjectURLMock).toHaveBeenCalled();
+    expect(fakeAnchor.download).toBe('relatório final.pdf');
+    expect(clickMock).toHaveBeenCalled();
+    expect(revokeObjectURLMock).toHaveBeenCalledWith('blob:test-url');
+  });
+
+  it('lança erro legível quando o download retorna erro 404', async () => {
+    const response = new Response(JSON.stringify({ error: { message: 'Evidência não encontrada.' } }), {
+      status: 404,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
+
+    const { downloadFile } = await import('./api');
+    await expect(downloadFile('/attachments/missing/download')).rejects.toThrow('Evidência não encontrada.');
+  });
+});

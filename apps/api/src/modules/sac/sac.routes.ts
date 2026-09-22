@@ -34,7 +34,7 @@ function parsePayload(body: Record<string, unknown>) {
 
 async function persistFiles(req: Request) {
   const files = (req.files as Express.Multer.File[] | undefined) ?? [];
-  return getAttachmentStorage().save(files);
+  return getAttachmentStorage().save(files, req.auth?.userId);
 }
 
 sacRouter.get('/', async (req, res, next) => {

@@ -30,9 +30,16 @@ describe('SAC creation and editing form helpers', () => {
 
   it('enforces the total attachment limit across saved and newly selected evidence', () => {
     const pdf = { name: 'evidencia.pdf', size: 1024, type: 'application/pdf' } as File;
+    const jpg = { name: 'foto.jpg', size: 2048, type: 'image/jpeg' } as File;
+    const png = { name: 'print.png', size: 4096, type: 'image/png' } as File;
+
+    expect(validateAttachments([pdf, jpg, png], 2)).toBe('');
     expect(validateAttachments([pdf], 4)).toBe('');
     expect(validateAttachments([pdf, pdf], 4)).toContain('no máximo 5');
     expect(validateAttachments([{ ...pdf, type: 'text/plain' }], 0)).toContain('formato não permitido');
+    expect(validateAttachments([{ ...pdf, type: 'application/x-msdownload' }], 0)).toContain('formato não permitido');
+    expect(validateAttachments([{ ...pdf, size: 0 }], 0)).toContain('deve possuir até 10 MB');
+    expect(validateAttachments([{ ...pdf, size: 11 * 1024 * 1024 }], 0)).toContain('deve possuir até 10 MB');
   });
 
   it('detects changes in fields and newly selected files', () => {

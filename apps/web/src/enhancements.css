@@ -21,3 +21,75 @@
 @media (max-width: 700px) {
   .case-summary { padding-left: 0; border-left: 0; }
 }
+
+/* Etapa 10: Evidências, anexos e download seguro */
+.attachment-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--color-surface, #ffffff);
+  border: 1px solid var(--color-border, #dfe6ef);
+  border-radius: var(--radius-md, 8px);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.attachment-item:hover {
+  border-color: var(--color-border-hover, #cbd6e2);
+  box-shadow: 0 2px 8px rgba(16, 35, 70, 0.05);
+}
+
+.attachment-details {
+  flex: 1;
+  min-width: 0;
+}
+
+.attachment-details strong {
+  display: block;
+  font-size: 13px;
+  color: var(--color-text-main, #102346);
+  word-break: break-word;
+  line-height: 1.35;
+}
+
+.attachment-details small {
+  display: block;
+  font-size: 11px;
+  color: var(--color-text-muted, #74869b);
+  margin-top: 4px;
+  word-break: break-word;
+}
+
+.attachment-download-btn {
+  flex-shrink: 0;
+  font-size: 12px;
+  padding: 8px 12px;
+  gap: 6px;
+  align-self: center;
+}
+
+.attachment-unavailable {
+  opacity: 0.7;
+  background: #fdf5f6;
+  border-color: #f7d2d8;
+}
+
+.spin {
+  animation: attachment-spin 0.8s linear infinite;
+}
+
+@keyframes attachment-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 520px) {
+  .attachment-item {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .attachment-download-btn {
+    width: 100%;
+    margin-top: 4px;
+  }
+}
