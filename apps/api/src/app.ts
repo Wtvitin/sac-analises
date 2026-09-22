@@ -11,6 +11,7 @@ import { checkDatabaseHealth } from './lib/database-health.js';
 import { notificationRouter } from './modules/notifications/notification.routes.js';
 import { getSecurityConfig } from './config.js';
 import { requireCsrf } from './modules/auth/csrf.middleware.js';
+import { analyticsRouter } from './modules/analytics/analytics.routes.js';
 
 export const app = express();
 const security = getSecurityConfig();
@@ -42,6 +43,7 @@ app.use('/users', usersRouter);
 app.use('/catalog', catalogRouter);
 app.use('/sac-records', requireAuth, sacRouter);
 app.use('/notifications', notificationRouter);
+app.use('/analytics', analyticsRouter);
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   if (error instanceof ZodError) return res.status(422).json({ error: { code: 'VALIDATION_ERROR', details: error.issues } });
   if (error instanceof SyntaxError) return res.status(400).json({ error: { code: 'INVALID_JSON', message: 'Conteúdo JSON inválido.' } });

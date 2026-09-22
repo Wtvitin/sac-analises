@@ -6,12 +6,10 @@ import {
   LayoutList, Menu, MoreHorizontal, Package, PanelLeftClose, PanelLeftOpen, Plus, Search,
   KeyRound, LogOut, RefreshCw, Settings2, SlidersHorizontal, TrendingUp, UserCheck, Users, X
 } from 'lucide-react';
-import {
-  Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart,
-  ResponsiveContainer, Tooltip, XAxis, YAxis
-} from 'recharts';
 import { records as initialRecords, type RecordItem, type Status } from './data';
 import { apiRequest, type AuthUser } from './api';
+import { DashboardPage } from './DashboardPage';
+import './analytics.css';
 import { useRecordList } from './use-record-list';
 import { CatalogPage } from './CatalogPage';
 import { SacRecordForm, type DetailedRecord } from './SacRecordForm';
@@ -204,8 +202,30 @@ function Overview({ refresh, query, status, setStatus, onSelect, selectedTicket,
   </>;
 }
 
-function RecordsPage({ refresh, requestedAttention, query, onSelect, onEdit, selectedTicket, onClearQuery, canCreate, onCreate }: { refresh: unknown; requestedAttention?: RecordFilters['attention']; query: string; onSelect: (record: RecordItem) => void; onEdit: (record: RecordItem) => void; selectedTicket?: string; onClearQuery: () => void; canCreate: boolean; onCreate: () => void }) {
-  const [view, setView] = useState<'table' | 'kanban'>('table'); const [filters, setFilters] = useState<RecordFilters>({ ...EMPTY_RECORD_FILTERS, attention: requestedAttention ?? 'Todos' }); const [sortKey, setSortKey] = useState<SortKey>(requestedAttention ? 'attention' : 'default'); const [sortOrder, setSortOrder] = useState<SortOrder>('asc'); const [pageSize, setPageSize] = useState(20);
+function RecordsPage({ refresh, requestedAttention, requestedFilters, query, onSelect, onEdit, selectedTicket, onClearQuery, canCreate, onCreate }: { refresh: unknown; requestedAttention?: RecordFilters['attention']; requestedFilters?: Partial<RecordFilters>; query: string; onSelect: (record: RecordItem) => void; onEdit: (record: RecordItem) => void; selectedTicket?: string; onClearQuery: () => void; canCreate: boolean; onCreate: () => void }) {
+  const [view, setView] = useState<'table' | 'kanban'>('table');
+  const [filters, setFilters] = useState<RecordFilters>({
+    ...EMPTY_RECORD_FILTERS,
+    ...(requestedAttention ? { attention: requestedAttention } : {}),
+    ...requestedFilters,
+  });
+  const [sortKey, setSortKey] = useState<SortKey>(requestedAttention ? 'attention' : 'default');
+  const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
+  const [pageSize, setPageSize] = useState(20);
+
+  useEffect(() => {
+    if (requestedFilters) {
+      setFilters(prev => ({ ...prev, ...requestedFilters }));
+    }
+  }, [requestedFilters]);
+
+  useEffect(() => {
+    if (requestedAttention) {
+      setFilters(prev => ({ ...prev, attention: requestedAttention }));
+      setSortKey('attention');
+    }
+  }, [requestedAttention]);
+
   const scope = JSON.stringify([query, filters, sortKey, sortOrder, pageSize]);
   const [cursor, setCursor] = useState({ scope, page: 1 });
   const page = cursor.scope === scope ? cursor.page : 1;
@@ -227,23 +247,6 @@ function RecordsPage({ refresh, requestedAttention, query, onSelect, onEdit, sel
   </>;
 }
 
-function DashboardsPage({ records }: { records: RecordItem[] }) {
-  const [period, setPeriod] = useState('Últimos 6 meses'); const [owner, setOwner] = useState('Todos');
-  const reasonChart = Object.entries(records.reduce<Record<string, number>>((acc, record) => ({ ...acc, [record.occurrence]: (acc[record.occurrence] ?? 0) + 1 }), {})).map(([name, total]) => ({ name, total }));
-  const trendChart: { month: string; abertos: number; concluidos: number }[] = [];
-  const pie = [{ name: 'Pendentes', value: records.filter(r => r.status === 'Pendente').length, color: '#bd075e' }, { name: 'Em andamento', value: records.filter(r => r.status === 'Em andamento').length, color: '#1678d3' }, { name: 'Concluídos', value: records.filter(r => r.status === 'Concluído').length, color: '#15945f' }];
-  const metrics = [{ label: 'Pendentes', value: pie[0].value, icon: ClipboardList }, { label: 'Em andamento', value: pie[1].value, icon: TrendingUp }, { label: 'Concluídos', value: pie[2].value, icon: CheckCircle2 }, { label: 'Alta prioridade', value: records.filter(r => r.priority === 'Alta' || r.priority === 'Crítica').length, icon: AlertTriangle }, { label: 'Vencidos', value: records.filter(isOverdue).length, icon: CalendarDays }, { label: 'Tempo médio', value: records.length ? 'Calculando' : '—', icon: BarChart3 }];
-  return <><PageHeader title="Dashboards" subtitle="Analise causas, tendências e desempenho da operação." action={<button className="secondary"><Download />Exportar CSV</button>} />
-    <section className="filter-bar dashboard-filters"><label>Período<select value={period} onChange={e => setPeriod(e.target.value)}><option>Últimos 30 dias</option><option>Últimos 3 meses</option><option>Últimos 6 meses</option><option>Este ano</option></select></label><label>Responsável<select value={owner} onChange={e => setOwner(e.target.value)}><option>Todos</option>{owners.map(value => <option key={value}>{value}</option>)}</select></label><label>Motivo<select><option>Todos os motivos</option>{reasonNames.map(value => <option key={value}>{value}</option>)}</select></label></section>
-    <section className="metric-grid">{metrics.map(({ label, value, icon: Icon }) => <article key={label}><span><Icon /></span><div><small>{label}</small><strong>{value}</strong></div></article>)}</section>
-    {!records.length ? <section className="table-card"><EmptyState icon={BarChart3} title="Ainda não existem dados suficientes para gerar este relatório" text="Os gráficos serão apresentados quando os primeiros casos forem cadastrados." /></section> : <section className="charts-grid"><ChartCard title="Casos por motivo" subtitle="Quantidade no período"><ResponsiveContainer width="100%" height={270}><BarChart data={reasonChart} layout="vertical" margin={{ left: 20 }}><CartesianGrid strokeDasharray="3 3" horizontal={false} /><XAxis type="number" hide /><YAxis dataKey="name" type="category" width={110} tick={{ fontSize: 11 }} /><Tooltip /><Bar dataKey="total" fill="#1678d3" radius={[0, 5, 5, 0]} /></BarChart></ResponsiveContainer></ChartCard>
-      <ChartCard title="Casos por status" subtitle="Distribuição atual"><ResponsiveContainer width="100%" height={270}><PieChart><Pie data={pie} dataKey="value" nameKey="name" innerRadius={62} outerRadius={92} paddingAngle={4}>{pie.map(item => <Cell key={item.name} fill={item.color} />)}</Pie><Tooltip /><Legend /></PieChart></ResponsiveContainer></ChartCard>
-      <div className="chart-wide"><ChartCard title="Evolução de abertura e conclusão" subtitle={`${period} · ${owner}`}><ResponsiveContainer width="100%" height={290}><LineChart data={trendChart}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="month" /><YAxis /><Tooltip /><Legend /><Line type="monotone" dataKey="abertos" name="Abertos" stroke="#bd075e" strokeWidth={3} /><Line type="monotone" dataKey="concluidos" name="Concluídos" stroke="#15945f" strokeWidth={3} /></LineChart></ResponsiveContainer></ChartCard></div></section>}
-  </>;
-}
-
-function ChartCard({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) { return <article className="chart-card"><header><div><h2>{title}</h2><p>{subtitle}</p></div><button className="icon-btn"><MoreHorizontal /></button></header>{children}</article>; }
-
 function ProfileModal({ user, onUserChange, onClose, onLogout }: { user: AuthUser; onUserChange: (user: AuthUser) => void; onClose: () => void; onLogout: () => void }) {
   const [section, setSection] = useState<'profile' | 'password' | 'notifications' | 'security'>('profile'); const [name, setName] = useState(user.name); const [currentPassword, setCurrentPassword] = useState(''); const [newPassword, setNewPassword] = useState(''); const [confirmPassword, setConfirmPassword] = useState(''); const [saving, setSaving] = useState(false); const [message, setMessage] = useState(''); const [confirmingSessions, setConfirmingSessions] = useState(false); const modalRef = useRef<HTMLElement>(null);
   useEffect(() => { const focusable = () => Array.from(modalRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled)') ?? []).filter(item => item.getClientRects().length > 0); requestAnimationFrame(() => focusable()[0]?.focus()); const key = (event: KeyboardEvent) => { if (event.key === 'Escape') { onClose(); return; } if (event.key !== 'Tab') return; const items = focusable(); const first = items[0]; const last = items.at(-1); if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); } }; window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key); }, [onClose]);
@@ -254,13 +257,71 @@ function ProfileModal({ user, onUserChange, onClose, onLogout }: { user: AuthUse
   return <div className="overlay" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section ref={modalRef} className="modal profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-title"><header className="modal-head"><div><h2 id="profile-title">Meu perfil</h2><p>Dados pessoais, segurança e preferências da conta.</p></div><button className="icon-btn" aria-label="Fechar perfil" onClick={onClose}><X /></button></header><div className="profile-tabs" role="tablist" aria-label="Seções do perfil"><button role="tab" aria-selected={section === 'profile'} onClick={() => setSection('profile')}>Perfil</button><button role="tab" aria-selected={section === 'password'} onClick={() => setSection('password')}>Alterar senha</button><button role="tab" aria-selected={section === 'notifications'} onClick={() => setSection('notifications')}>Notificações</button><button role="tab" aria-selected={section === 'security'} onClick={() => setSection('security')}>Segurança</button></div><div className="modal-body"><div className="profile-identity"><span className="avatar dark">{initials(user.name)}</span><div><strong>{user.name}</strong><span>{user.email}</span></div></div>{section === 'profile' && <div className="profile-form"><label>Nome completo<input value={name} maxLength={120} onChange={event => setName(event.target.value)} /></label><dl className="profile-details"><div><dt>E-mail</dt><dd>{user.email}</dd></div><div><dt>Perfil de acesso</dt><dd>{access}</dd></div><div><dt>Estado</dt><dd>{user.active && user.approvedAt ? 'Ativo e aprovado' : 'Acesso indisponível'}</dd></div><div><dt>Fuso horário</dt><dd>America/Sao_Paulo</dd></div></dl><button className="primary" disabled={saving || name.trim().length < 3 || name.trim() === user.name} onClick={() => void saveName()}>Salvar nome</button></div>}{section === 'password' && <div className="profile-form"><p>Após a alteração, todas as sessões anteriores serão invalidadas e você voltará ao login.</p><label>Senha atual<input type="password" autoComplete="current-password" value={currentPassword} maxLength={128} onChange={event => setCurrentPassword(event.target.value)} /></label><label>Nova senha<input type="password" autoComplete="new-password" minLength={12} maxLength={128} value={newPassword} onChange={event => setNewPassword(event.target.value)} /></label><label>Confirmar nova senha<input type="password" autoComplete="new-password" minLength={12} maxLength={128} value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} /></label><button className="primary" disabled={saving || !currentPassword || !newPassword || !confirmPassword} onClick={() => void changePassword()}>Alterar senha e sair</button></div>}{section === 'notifications' && <dl className="profile-details"><div><dt>Notificações operacionais</dt><dd>Ativas para atribuições, comentários, mudanças críticas e alertas temporais.</dd></div><div><dt>Entrega</dt><dd>Central interna do SAC Análises.</dd></div></dl>}{section === 'security' && <div className="profile-form session-security"><strong>Sessão atual protegida</strong><p>Os tokens de autenticação ficam em cookies HttpOnly e não são expostos ao JavaScript.</p>{confirmingSessions ? <div className="session-confirm" role="alert"><p>Deseja encerrar todas as outras sessões ativas?</p><div><button className="secondary" disabled={saving} onClick={() => setConfirmingSessions(false)}>Cancelar</button><button className="primary" disabled={saving} onClick={() => void closeOtherSessions()}>{saving ? 'Encerrando...' : 'Confirmar encerramento'}</button></div></div> : <button className="secondary" onClick={() => { setMessage(''); setConfirmingSessions(true); }}>Encerrar outras sessões</button>}</div>}{message && <p className="inline-error" role="status">{message}</p>}</div><footer className="form-footer"><button className="secondary" onClick={onLogout}>Encerrar sessão</button><button className="primary" onClick={onClose}>Fechar</button></footer></section></div>;
 }
 
+const PAGE_SLUGS: Record<Page, string> = {
+  'Visão geral': 'visao-geral',
+  'Registros': 'registros',
+  'Dashboards': 'dashboards',
+  'Equipe': 'equipe',
+  'Cadastros': 'cadastros',
+};
+
+function getInitialPage(): Page {
+  try {
+    const hash = window.location.hash.replace(/^#\/?/, '').toLowerCase();
+    const map: Record<string, Page> = {
+      'visao-geral': 'Visão geral',
+      'registros': 'Registros',
+      'dashboards': 'Dashboards',
+      'dashboard': 'Dashboards',
+      'equipe': 'Equipe',
+      'cadastros': 'Cadastros',
+    };
+    if (hash && map[hash]) {
+      return map[hash];
+    }
+    const saved = localStorage.getItem('sac_active_page') as Page | null;
+    const valid: Page[] = ['Visão geral', 'Registros', 'Dashboards', 'Equipe', 'Cadastros'];
+    if (saved && valid.includes(saved)) {
+      return saved;
+    }
+  } catch {}
+  return 'Visão geral';
+}
+
 export function App({ user, onUserChange, onLogout }: { user: AuthUser; onUserChange: (user: AuthUser) => void; onLogout: () => void }) {
-  const [page, setPage] = useState<Page>('Visão geral'); const [allRecords, setAllRecords] = useState(initialRecords); const [selected, setSelected] = useState<RecordItem | null>(null); const [status, setStatus] = useState<Status | null>(null); const [input, setInput] = useState(''); const [query, setQuery] = useState(''); const [creating, setCreating] = useState(false); const [editingRecordId, setEditingRecordId] = useState<string>(); const [success, setSuccess] = useState(''); const [loadError, setLoadError] = useState(''); const [notificationsOpen, setNotificationsOpen] = useState(false); const [profileOpen, setProfileOpen] = useState(false); const [profileModal, setProfileModal] = useState(false);
+  const [page, setPageState] = useState<Page>(getInitialPage);
+  const setPage = (newPage: Page) => {
+    setPageState(newPage);
+    try {
+      localStorage.setItem('sac_active_page', newPage);
+      const slugValue = PAGE_SLUGS[newPage];
+      if (slugValue && window.location.hash !== `#${slugValue}`) {
+        window.location.hash = slugValue;
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    const handleHash = () => {
+      const fromHash = getInitialPage();
+      setPageState(fromHash);
+    };
+    window.addEventListener('hashchange', handleHash);
+    return () => window.removeEventListener('hashchange', handleHash);
+  }, []);
+
+  const [allRecords, setAllRecords] = useState(initialRecords); const [selected, setSelected] = useState<RecordItem | null>(null); const [status, setStatus] = useState<Status | null>(null); const [input, setInput] = useState(''); const [query, setQuery] = useState(''); const [creating, setCreating] = useState(false); const [editingRecordId, setEditingRecordId] = useState<string>(); const [success, setSuccess] = useState(''); const [loadError, setLoadError] = useState(''); const [notificationsOpen, setNotificationsOpen] = useState(false); const [profileOpen, setProfileOpen] = useState(false); const [profileModal, setProfileModal] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [recordsLoading, setRecordsLoading] = useState(true); const [recordsLoadError, setRecordsLoadError] = useState(false); const [recordsReloadKey, setRecordsReloadKey] = useState(0);
   const [temporalRefreshKey, setTemporalRefreshKey] = useState(0); const [requestedAttention, setRequestedAttention] = useState<RecordFilters['attention']>();
+  const [requestedFilters, setRequestedFilters] = useState<Partial<RecordFilters>>();
   const [requestedTeamApproval, setRequestedTeamApproval] = useState<'pending'>();
+  const handleNavigateToRecords = (navFilters: Partial<RecordFilters>) => {
+    setRequestedAttention(undefined);
+    setRequestedFilters(navFilters);
+    setPage('Registros');
+  };
   const notificationAnchorRef = useRef<HTMLDivElement>(null); const notificationTriggerRef = useRef<HTMLButtonElement>(null); const profileAnchorRef = useRef<HTMLDivElement>(null); const profileTriggerRef = useRef<HTMLButtonElement>(null);
   const profileModalWasOpenRef = useRef(false);
   const sidebarRef = useRef<HTMLElement>(null); const sidebarTriggerRef = useRef<HTMLButtonElement>(null); const recordFormOpenerRef = useRef<HTMLElement | null>(null);
@@ -317,12 +378,6 @@ export function App({ user, onUserChange, onLogout }: { user: AuthUser; onUserCh
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [sidebarOpen]);
   useEffect(() => {
-    if (page !== 'Dashboards') return;
-    const controller = new AbortController(); setRecordsLoading(true); setRecordsLoadError(false);
-    apiRequest<{ items: ApiRecord[] }>('/sac-records?page=1&pageSize=100&sort=updatedAt&order=desc', { signal: controller.signal }).then(result => setAllRecords(result.items.map(mapApiRecord))).catch(error => { if ((error as Error).name !== 'AbortError') setRecordsLoadError(true); }).finally(() => { if (!controller.signal.aborted) setRecordsLoading(false); });
-    return () => controller.abort();
-  }, [recordsReloadKey, page]);
-  useEffect(() => {
     const refreshTime = () => setTemporalRefreshKey(value => value + 1);
     const visible = () => { if (document.visibilityState === 'visible') refreshTime(); };
     window.addEventListener('focus', refreshTime); document.addEventListener('visibilitychange', visible);
@@ -346,10 +401,10 @@ export function App({ user, onUserChange, onLogout }: { user: AuthUser; onUserCh
   const roleLabel = user.role === 'ADMIN' ? 'Administrador' : user.role === 'ANALYST' ? 'Analista' : 'Consulta';
   const visibleNav = nav.filter(item => item.label === 'Equipe' ? can(user.role, 'users:manage') : item.label === 'Cadastros' ? can(user.role, 'catalogs:manage') : true);
   const clearQuery = () => { setInput(''); setQuery(''); };
-  const viewAttention = (filter: RecordFilters['attention']) => { setRequestedAttention(filter); setPage('Registros'); };
+  const viewAttention = (filter: RecordFilters['attention']) => { setRequestedFilters(undefined); setRequestedAttention(filter); setPage('Registros'); };
   const openNotificationRecord = async (recordId: string) => { const record = await apiRequest<OperationalRecord>(`/sac-records/${recordId}`); setPage('Registros'); setSelected(mapApiRecord(record)); };
-  return <div className={`shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}><aside id="primary-sidebar" ref={sidebarRef} className={sidebarOpen ? 'sidebar-open' : ''} aria-label="Navegação principal"><div className="brand"><div className="brand-copy"><strong>SAC <em>Análises</em></strong><span>Do pedido à solução</span></div><button type="button" className="sidebar-collapse" aria-label={sidebarCollapsed ? 'Expandir menu lateral' : 'Recolher menu lateral'} aria-controls="primary-sidebar" aria-pressed={sidebarCollapsed} onClick={() => setSidebarCollapsed(value => !value)}>{sidebarCollapsed ? <PanelLeftOpen aria-hidden="true" /> : <PanelLeftClose aria-hidden="true" />}</button><button type="button" className="sidebar-close" aria-label="Fechar menu principal" onClick={() => { setSidebarOpen(false); requestAnimationFrame(() => sidebarTriggerRef.current?.focus()); }}><X aria-hidden="true" /></button></div><nav>{visibleNav.map(({ label, icon: Icon }) => <button className={page === label ? 'active' : ''} onClick={() => { setPage(label); setSidebarOpen(false); }} data-tooltip={label} aria-current={page === label ? 'page' : undefined} key={label}><Icon aria-hidden="true" />{label}</button>)}</nav><div className="sidebar-user"><span className="avatar dark">{initials(user.name)}</span><div><strong>{user.name}</strong><small>{roleLabel}</small></div></div></aside>{sidebarOpen && <button type="button" className="sidebar-backdrop" aria-label="Fechar menu principal" onClick={() => { setSidebarOpen(false); requestAnimationFrame(() => sidebarTriggerRef.current?.focus()); }} />}
+  return <div className={`shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}><aside id="primary-sidebar" ref={sidebarRef} className={sidebarOpen ? 'sidebar-open' : ''} aria-label="Navegação principal"><div className="brand"><div className="brand-copy"><strong>SAC <em>Análises</em></strong><span>Do pedido à solução</span></div><button type="button" className="sidebar-collapse" aria-label={sidebarCollapsed ? 'Expandir menu lateral' : 'Recolher menu lateral'} aria-controls="primary-sidebar" aria-pressed={sidebarCollapsed} onClick={() => setSidebarCollapsed(value => !value)}>{sidebarCollapsed ? <PanelLeftOpen aria-hidden="true" /> : <PanelLeftClose aria-hidden="true" />}</button><button type="button" className="sidebar-close" aria-label="Fechar menu principal" onClick={() => { setSidebarOpen(false); requestAnimationFrame(() => sidebarTriggerRef.current?.focus()); }}><X aria-hidden="true" /></button></div><nav>{visibleNav.map(({ label, icon: Icon }) => <button type="button" className={page === label ? 'active' : ''} onClick={() => { setPage(label); setSidebarOpen(false); }} data-tooltip={label} aria-current={page === label ? 'page' : undefined} key={label}><Icon aria-hidden="true" />{label}</button>)}</nav><div className="sidebar-user"><span className="avatar dark">{initials(user.name)}</span><div><strong>{user.name}</strong><small>{roleLabel}</small></div></div></aside>{sidebarOpen && <button type="button" className="sidebar-backdrop" aria-label="Fechar menu principal" onClick={() => { setSidebarOpen(false); requestAnimationFrame(() => sidebarTriggerRef.current?.focus()); }} />}
     <main><header className="topbar" aria-label="Cabeçalho principal"><button ref={sidebarTriggerRef} type="button" className="sidebar-trigger" aria-label="Abrir menu principal" aria-controls="primary-sidebar" aria-expanded={sidebarOpen} onClick={() => { setSidebarOpen(true); setNotificationsOpen(false); setProfileOpen(false); }}><Menu aria-hidden="true" /></button><strong className="topbar-brand">SAC <em>Análises</em></strong><SearchInput className="global-search" value={input} onChange={setInput} onClear={clearQuery} placeholder="Buscar por ticket, pedido, cliente ou motivo..." label="Busca global" /><div className="topbar-actions">{user.role !== 'VIEWER' && <button className="primary topbar-new-record" onClick={openCreateRecord} aria-label="Novo registro"><Plus aria-hidden="true" /><span>Novo registro</span></button>}<NotificationCenter open={notificationsOpen} onOpenChange={value => { setNotificationsOpen(value); if (value) setProfileOpen(false); }} triggerRef={notificationTriggerRef} anchorRef={notificationAnchorRef} refreshKey={recordsReloadKey} onOpenRecord={openNotificationRecord} onOpenTeam={() => { setRequestedTeamApproval('pending'); setPage('Equipe'); }} onMessage={setLoadError} /><div className="popover-anchor profile-anchor" ref={profileAnchorRef}><button ref={profileTriggerRef} className="user-trigger" aria-label={`Abrir menu do perfil de ${user.name}`} aria-haspopup="menu" aria-controls="profile-menu" aria-expanded={profileOpen} onClick={() => { setProfileOpen(v => !v); setNotificationsOpen(false); }}><span className="avatar dark">{initials(user.name)}</span><span className="user"><strong>{user.name}</strong><small>{roleLabel}</small></span><ChevronDown className="user-chevron" aria-hidden="true" /></button>{profileOpen && <section id="profile-menu" className="profile-menu" role="menu"><button role="menuitem" onClick={() => { setProfileModal(true); setProfileOpen(false); }}><CircleUserRound aria-hidden="true" />Meu perfil</button><button role="menuitem" onClick={() => { setProfileModal(true); setProfileOpen(false); }}><Settings2 aria-hidden="true" />Preferências</button><button role="menuitem" onClick={() => { setProfileModal(true); setProfileOpen(false); }}><KeyRound aria-hidden="true" />Alterar senha</button><div className="profile-menu-divider" role="separator" /><button role="menuitem" className="logout" onClick={onLogout}><LogOut aria-hidden="true" />Sair</button></section>}</div></div></header>
-      <div className="content">{loadError && <div className="inline-error" role="alert">{loadError}<button onClick={() => setLoadError('')}>Fechar</button></div>}{page === 'Visão geral' && <Overview refresh={`${recordsReloadKey}-${temporalRefreshKey}`} query={query} status={status} setStatus={setStatus} onSelect={setSelected} selectedTicket={selected?.ticket} onClearQuery={clearQuery} onViewAttention={viewAttention} />}{page === 'Registros' && <RecordsPage refresh={`${recordsReloadKey}-${temporalRefreshKey}`} requestedAttention={requestedAttention} query={query} onSelect={setSelected} onEdit={openEditRecord} selectedTicket={selected?.ticket} onClearQuery={clearQuery} canCreate={user.role !== 'VIEWER'} onCreate={openCreateRecord} />}{page === 'Dashboards' && <DashboardsPage records={allRecords} />}{page === 'Equipe' && <TeamManagementPage requestedApproval={requestedTeamApproval} onRequestHandled={() => setRequestedTeamApproval(undefined)} onMessage={setSuccess} />}{page === 'Cadastros' && <CatalogPage onSuccess={setSuccess} />}</div>
+      <div className="content">{loadError && <div className="inline-error" role="alert">{loadError}<button onClick={() => setLoadError('')}>Fechar</button></div>}{page === 'Visão geral' && <Overview refresh={`${recordsReloadKey}-${temporalRefreshKey}`} query={query} status={status} setStatus={setStatus} onSelect={setSelected} selectedTicket={selected?.ticket} onClearQuery={clearQuery} onViewAttention={viewAttention} />}{page === 'Registros' && <RecordsPage refresh={`${recordsReloadKey}-${temporalRefreshKey}`} requestedAttention={requestedAttention} requestedFilters={requestedFilters} query={query} onSelect={setSelected} onEdit={openEditRecord} selectedTicket={selected?.ticket} onClearQuery={clearQuery} canCreate={user.role !== 'VIEWER'} onCreate={openCreateRecord} />}{page === 'Dashboards' && <DashboardPage onNavigateToRecords={handleNavigateToRecords} />}{page === 'Equipe' && <TeamManagementPage requestedApproval={requestedTeamApproval} onRequestHandled={() => setRequestedTeamApproval(undefined)} onMessage={setSuccess} />}{page === 'Cadastros' && <CatalogPage onSuccess={setSuccess} />}</div>
     </main>{selected?.id && <CaseOperationsModal recordId={selected.id} user={user} onClose={() => setSelected(null)} onChanged={refreshOperationalRecord} />}{(creating || editingRecordId) && <SacRecordForm recordId={editingRecordId} onClose={closeRecordForm} onSaved={saveRecord} onOpenCatalogs={() => { setCreating(false); setEditingRecordId(undefined); setPage('Cadastros'); }} />}{profileModal && <ProfileModal user={user} onUserChange={onUserChange} onClose={() => setProfileModal(false)} onLogout={onLogout} />}{success && <div className="toast"><CheckCircle2 />{success}</div>}</div>;
 }
