@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mock = vi.hoisted(() => {
   const database = {
     user: { findUnique: vi.fn(), create: vi.fn(), findMany: vi.fn(), update: vi.fn(), findUniqueOrThrow: vi.fn() },
-    adminAudit: { create: vi.fn() }, notification: { createMany: vi.fn() },
+    adminAudit: { create: vi.fn() }, notification: { createMany: vi.fn() }, authSession: { updateMany: vi.fn() },
   };
   const transaction = vi.fn(async (input: unknown) => typeof input === 'function' ? (input as (tx: typeof database) => unknown)(database) : Promise.all(input as Promise<unknown>[]));
   const bcrypt = { hash: vi.fn(), compare: vi.fn() };
@@ -17,7 +17,7 @@ import { authenticate, changeOwnPassword, requestAccess } from './auth.service.j
 const approved = { id: 'user-1', name: 'Pessoa', email: 'pessoa@example.test', passwordHash: 'hash', role: 'ANALYST', active: true, approvedAt: new Date(), rejectedAt: null, tokenVersion: 2, timezone: 'America/Sao_Paulo', lastLoginAt: null };
 
 describe('ciclo de autenticação e acesso', () => {
-  beforeEach(() => { vi.clearAllMocks(); mock.bcrypt.hash.mockResolvedValue('safe-hash'); mock.bcrypt.compare.mockResolvedValue(true); mock.database.adminAudit.create.mockResolvedValue({ id: 'audit-1' }); mock.database.notification.createMany.mockResolvedValue({ count: 1 }); });
+  beforeEach(() => { vi.clearAllMocks(); mock.bcrypt.hash.mockResolvedValue('safe-hash'); mock.bcrypt.compare.mockResolvedValue(true); mock.database.adminAudit.create.mockResolvedValue({ id: 'audit-1' }); mock.database.notification.createMany.mockResolvedValue({ count: 1 }); mock.database.authSession.updateMany.mockResolvedValue({ count: 2 }); });
 
   it('cria solicitação não aprovada, audita e notifica administradores sem dados sensíveis', async () => {
     mock.database.user.findUnique.mockResolvedValue(null); mock.database.user.create.mockResolvedValue({ id: 'request-1' }); mock.database.user.findMany.mockResolvedValue([{ id: 'admin-1' }]);
@@ -48,6 +48,7 @@ describe('ciclo de autenticação e acesso', () => {
     mock.database.user.findUniqueOrThrow.mockResolvedValue({ passwordHash: 'old-hash' }); mock.bcrypt.compare.mockResolvedValueOnce(true).mockResolvedValueOnce(false); mock.database.user.update.mockResolvedValue({ id: 'user-1' });
     await changeOwnPassword('user-1', { currentPassword: 'SenhaAnterior123', newPassword: 'SenhaNovaSegura123', confirmPassword: 'SenhaNovaSegura123' });
     expect(mock.database.user.update).toHaveBeenCalledWith(expect.objectContaining({ data: { passwordHash: 'safe-hash', tokenVersion: { increment: 1 } } }));
+    expect(mock.database.authSession.updateMany).toHaveBeenCalledWith({ where: { userId: 'user-1', revokedAt: null }, data: { revokedAt: expect.any(Date) } });
     const audit = mock.database.adminAudit.create.mock.calls[0][0]; expect(audit.data).toMatchObject({ type: 'PASSWORD_CHANGED', actorId: 'user-1', targetUserId: 'user-1' });
     expect(JSON.stringify(audit)).not.toMatch(/Senha|hash/i);
   });

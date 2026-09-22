@@ -59,6 +59,15 @@ O comando cria somente o primeiro usuário e bloqueia execuções posteriores se
 - Alterações administrativas e de senha são auditadas sem armazenar senhas, hashes, tokens ou credenciais.
 - O último acesso é atualizado somente após login bem-sucedido e exibido em `America/Sao_Paulo`.
 
+## Sessões e publicação segura
+
+- Access tokens duram 15 minutos e refresh tokens duram 30 dias por padrão. Ambos são enviados somente em cookies `HttpOnly`; nenhum token fica disponível ao JavaScript ou aos armazenamentos do navegador.
+- O refresh token é persistido apenas como hash HMAC, rotacionado transacionalmente e agrupado em uma família revogável. Reutilizar um token já rotacionado revoga toda a família.
+- Toda mutação exige um token CSRF independente em cookie legível e no header `X-CSRF-Token`. CORS não substitui essa validação.
+- Em produção (`NODE_ENV=production`) os cookies de autenticação recebem `Secure`. O desenvolvimento local continua aceitando HTTP com `SameSite=Lax`.
+- `WEB_ORIGIN` deve ser uma origem explícita; curinga é rejeitado. `TRUST_PROXY` aceita somente `false`, `loopback` ou entre 1 e 3 proxies confiáveis.
+- Alteração de senha, inativação, alteração de perfil, logout e revogações administrativas encerram as sessões correspondentes.
+
 Frontend: `http://localhost:5173`  
 API: `http://localhost:3333`  
 Saúde da API: `http://localhost:3333/health`

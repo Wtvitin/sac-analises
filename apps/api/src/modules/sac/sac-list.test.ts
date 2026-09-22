@@ -22,7 +22,7 @@ describe('server record listing (isolated, no database writes)', () => {
   });
   it('queries past the first 100 records with stable server sorting', async () => {
     mock.findMany.mockResolvedValue([{ id: '101', ticket: 'TEST-101', status: 'PENDING', priority: 'MEDIUM', dueAt: new Date('2026-09-20T12:00:00Z'), openedAt: new Date('2026-09-01T12:00:00Z'), assigneeId: 'user', lastOperationalActivityAt: new Date('2026-09-12T12:00:00Z') }]); mock.count.mockResolvedValue(121);
-    const result = await listSacRecords(listSacRecordsSchema.parse({ page: 6, pageSize: 20, sort: 'customer', order: 'asc' }));
+    const result = await listSacRecords(listSacRecordsSchema.parse({ page: 6, pageSize: 20, sort: 'customer', order: 'asc' }), new Date('2026-09-14T15:00:00Z'));
     expect(mock.findMany.mock.calls[0][0]).toMatchObject({ skip: 100, take: 20, orderBy: [{ customer: { name: 'asc' } }, { id: 'asc' }] });
     expect(result).toMatchObject({ items: [{ ticket: 'TEST-101', operational: { isOverdue: false } }], total: 121, page: 6 });
   });

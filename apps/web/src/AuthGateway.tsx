@@ -13,7 +13,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { App } from './App';
-import { apiRequest, type AuthUser } from './api';
+import { apiRequest, setSessionExpiredHandler, type AuthUser } from './api';
 
 type AuthMode = 'login' | 'register';
 type Feedback = { kind: 'error' | 'info' | 'success'; title?: string; text: string };
@@ -39,25 +39,15 @@ export function AuthGateway() {
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
-    const token = localStorage.getItem('sac_token') ?? sessionStorage.getItem('sac_token');
-    if (!token) {
-      setChecking(false);
-      return;
-    }
-    apiRequest<AuthUser>('/auth/me')
+    setSessionExpiredHandler(() => setUser(null));
+    apiRequest<AuthUser>('/auth/session')
       .then(setUser)
-      .catch(() => {
-        localStorage.removeItem('sac_token');
-        sessionStorage.removeItem('sac_token');
-      })
+      .catch(() => setUser(null))
       .finally(() => setChecking(false));
+    return () => setSessionExpiredHandler(undefined);
   }, []);
 
-  const logout = () => {
-    localStorage.removeItem('sac_token');
-    sessionStorage.removeItem('sac_token');
-    setUser(null);
-  };
+  const logout = async () => { try { await apiRequest('/auth/logout', { method: 'POST' }); } finally { setUser(null); } };
 
   if (checking) return <div className="app-loading"><span /><p>Carregando ambiente seguro...</p></div>;
   return user ? <App user={user} onUserChange={setUser} onLogout={logout} /> : <AuthScreen onAuthenticated={setUser} />;
@@ -70,7 +60,7 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [errors, setErrors] = useState<LoginErrors>({});
-  const [form, setForm] = useState({ name: '', email: '', password: '', confirm: '', remember: false });
+  const [form, setForm] = useState({ name: '', email: '', password: '', confirm: '' });
 
   useEffect(() => { apiRequest<{ enabled: boolean }>('/auth/registration-config').then(result => setRegistrationEnabled(result.enabled)).catch(() => setRegistrationEnabled(false)); }, []);
 
@@ -111,11 +101,10 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
     setLoading(true);
     try {
       if (mode === 'login') {
-        const result = await apiRequest<{ token: string; user: AuthUser }>('/auth/login', {
+        const result = await apiRequest<{ user: AuthUser }>('/auth/login', {
           method: 'POST',
           body: JSON.stringify({ email: form.email.trim(), password: form.password }),
         });
-        (form.remember ? localStorage : sessionStorage).setItem('sac_token', result.token);
         onAuthenticated(result.user);
       } else {
         const result = await apiRequest<{ message: string }>('/auth/register', {
@@ -235,8 +224,9 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
 
           {mode === 'login' && (
             <div className="auth-options">
-              <label className="auth-check"><input type="checkbox" checked={form.remember} onChange={event => setForm(current => ({ ...current, remember: event.target.checked }))} /><span aria-hidden="true" />Lembrar de mim</label>
-              <button type="button" onClick={() => setFeedback({ kind: 'info', text: 'Solicite a redefinição de senha ao administrador do sistema.' })}>Esqueci minha senha</button>
+              <span>Esta sessão usa cookies protegidos.</span>
+              <button type="button" disabled aria-describedby="password-recovery-unavailable">Recuperação por e-mail indisponível</button>
+              <span id="password-recovery-unavailable" className="sr-only">Solicite a redefinição ao administrador do sistema.</span>
             </div>
           )}
 

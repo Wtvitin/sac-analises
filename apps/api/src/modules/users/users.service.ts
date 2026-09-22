@@ -44,6 +44,10 @@ async function isLastAdministrator(tx: Prisma.TransactionClient, userId: string)
   return await tx.user.count({ where: { id: { not: userId }, role: 'ADMIN', active: true, approvedAt: { not: null }, rejectedAt: null } }) === 0;
 }
 
+async function revokeSessions(tx: Prisma.TransactionClient, userId: string, revokedAt = new Date()) {
+  return tx.authSession.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt } });
+}
+
 function lastAdminError() { return new UserManagementError('LAST_ADMIN_PROTECTED', 'Mantenha pelo menos um administrador ativo e aprovado.', 409); }
 
 export async function approveUser(targetUserId: string, role: 'ANALYST' | 'VIEWER', actorId: string) {
@@ -54,7 +58,8 @@ export async function approveUser(targetUserId: string, role: 'ANALYST' | 'VIEWE
     const approvedAt = new Date();
     const changed = await tx.user.updateMany({ where: { id: targetUserId, approvedAt: null }, data: { role, active: true, approvedAt, approvedById: actorId, rejectedAt: null, rejectionReason: null, tokenVersion: { increment: 1 } } });
     if (!changed.count) return tx.user.findUniqueOrThrow({ where: { id: targetUserId }, select: userSelect });
-    await tx.adminAudit.create({ data: { type: 'ACCESS_APPROVED', actorId, targetUserId, metadata: { role } } });
+    const sessions = await revokeSessions(tx, targetUserId, approvedAt);
+    await tx.adminAudit.create({ data: { type: 'ACCESS_APPROVED', actorId, targetUserId, metadata: { role, sessionsRevoked: sessions.count } } });
     return tx.user.findUniqueOrThrow({ where: { id: targetUserId }, select: userSelect });
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
@@ -67,7 +72,8 @@ export async function rejectUser(targetUserId: string, reason: string, actorId: 
     if (current.role === 'ADMIN' && current.active && current.approvedAt && await isLastAdministrator(tx, targetUserId)) { await tx.adminAudit.create({ data: { type: 'LAST_ADMIN_BLOCKED', actorId, targetUserId, metadata: { action: 'reject' } } }); return { blocked: true as const }; }
     if (current.approvedAt) throw new UserManagementError('USER_ALREADY_APPROVED', 'Use a inativação para uma conta já aprovada.', 422);
     const user = await tx.user.update({ where: { id: targetUserId }, data: { active: false, approvedAt: null, approvedById: null, rejectedAt: new Date(), rejectionReason: reason, tokenVersion: { increment: 1 } }, select: userSelect });
-    await tx.adminAudit.create({ data: { type: 'ACCESS_REJECTED', actorId, targetUserId, justification: reason } }); return { blocked: false as const, user };
+    const sessions = await revokeSessions(tx, targetUserId);
+    await tx.adminAudit.create({ data: { type: 'ACCESS_REJECTED', actorId, targetUserId, justification: reason, metadata: { sessionsRevoked: sessions.count } } }); return { blocked: false as const, user };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   if (result.blocked) throw lastAdminError(); return result.user;
 }
@@ -83,7 +89,8 @@ export async function changeUserRole(targetUserId: string, input: ChangeRoleInpu
     if (needsReason && !input.justification?.trim()) throw new UserManagementError('JUSTIFICATION_REQUIRED', 'Informe a justificativa para esta alteração de perfil.', 422);
     if (current.role === 'ADMIN' && input.role !== 'ADMIN' && current.active && current.approvedAt && await isLastAdministrator(tx, targetUserId)) { await tx.adminAudit.create({ data: { type: 'LAST_ADMIN_BLOCKED', actorId, targetUserId, metadata: { action: 'role-change' } } }); return { blocked: true as const }; }
     const user = await tx.user.update({ where: { id: targetUserId }, data: { role: input.role, tokenVersion: { increment: 1 } }, select: userSelect });
-    await tx.adminAudit.create({ data: { type: 'ROLE_CHANGED', actorId, targetUserId, justification: input.justification, metadata: { from: current.role, to: input.role } } }); return { blocked: false as const, user };
+    const sessions = await revokeSessions(tx, targetUserId);
+    await tx.adminAudit.create({ data: { type: 'ROLE_CHANGED', actorId, targetUserId, justification: input.justification, metadata: { from: current.role, to: input.role, sessionsRevoked: sessions.count } } }); return { blocked: false as const, user };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   if (result.blocked) throw lastAdminError(); return result.user;
 }
@@ -110,7 +117,8 @@ export async function deactivateUser(targetUserId: string, input: DeactivateInpu
       if (recipient) await createCaseNotification(tx, { recipientId: recipient.id, actorId, recordId: record.id, ticket: record.ticket, type: 'ASSIGNEE_CHANGED', title: 'Caso transferido para você', summary: `${record.ticket} foi transferido para sua responsabilidade.`, metadata: { ticket: record.ticket } });
     }
     const user = await tx.user.update({ where: { id: targetUserId }, data: { active: false, tokenVersion: { increment: 1 } }, select: userSelect });
-    await tx.adminAudit.create({ data: { type: 'USER_DEACTIVATED', actorId, targetUserId, justification: input.justification, metadata: { openCaseCount: cases.length, strategy: input.strategy ?? 'none', transferToUserId: recipient?.id ?? null } } });
+    const sessions = await revokeSessions(tx, targetUserId, activityAt);
+    await tx.adminAudit.create({ data: { type: 'USER_DEACTIVATED', actorId, targetUserId, justification: input.justification, metadata: { openCaseCount: cases.length, strategy: input.strategy ?? 'none', transferToUserId: recipient?.id ?? null, sessionsRevoked: sessions.count } } });
     if (cases.length) await tx.adminAudit.create({ data: { type: 'CASES_TRANSFERRED', actorId, targetUserId, metadata: { count: cases.length, strategy: input.strategy, transferToUserId: recipient?.id ?? null } } });
     return { blocked: false as const, user };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
@@ -124,7 +132,8 @@ export async function reactivateUser(targetUserId: string, reason: string, actor
     if (!current.approvedAt || current.rejectedAt) throw new UserManagementError('USER_NOT_APPROVED', 'Somente contas aprovadas podem ser reativadas.', 422);
     if (current.active) return tx.user.findUniqueOrThrow({ where: { id: targetUserId }, select: userSelect });
     const user = await tx.user.update({ where: { id: targetUserId }, data: { active: true, tokenVersion: { increment: 1 } }, select: userSelect });
-    await tx.adminAudit.create({ data: { type: 'USER_REACTIVATED', actorId, targetUserId, justification: reason } }); return user;
+    const sessions = await revokeSessions(tx, targetUserId);
+    await tx.adminAudit.create({ data: { type: 'USER_REACTIVATED', actorId, targetUserId, justification: reason, metadata: { sessionsRevoked: sessions.count } } }); return user;
   });
 }
 

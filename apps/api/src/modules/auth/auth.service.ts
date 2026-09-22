@@ -46,6 +46,7 @@ export async function changeOwnPassword(userId: string, raw: unknown) {
   const passwordHash = await bcrypt.hash(input.newPassword, 12);
   await prisma.$transaction([
     prisma.user.update({ where: { id: userId }, data: { passwordHash, tokenVersion: { increment: 1 } }, select: { id: true } }),
+    prisma.authSession.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: new Date() } }),
     prisma.adminAudit.create({ data: { type: 'PASSWORD_CHANGED', actorId: userId, targetUserId: userId, metadata: { selfService: true } } }),
   ]);
 }

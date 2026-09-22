@@ -14,5 +14,27 @@ export function validateEnvironment(environment: NodeJS.ProcessEnv = process.env
   }
   const port = Number(environment.PORT ?? 3333);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT deve ser uma porta TCP válida.');
-  return { port };
+  return { port, ...getSecurityConfig(environment) };
+}
+
+function positiveInteger(value: string | undefined, fallback: number, name: string, maximum: number) {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > maximum) throw new Error(`${name} deve ser um inteiro entre 1 e ${maximum}.`);
+  return parsed;
+}
+
+export function getSecurityConfig(environment: NodeJS.ProcessEnv = process.env) {
+  const production = environment.NODE_ENV === 'production';
+  const webOrigin = environment.WEB_ORIGIN?.trim() || (production ? '' : 'http://localhost:5173');
+  if (!webOrigin || webOrigin === '*' || !/^https?:\/\/[^\s/$.?#].[^\s]*$/i.test(webOrigin)) throw new Error('WEB_ORIGIN deve conter uma origem HTTP explícita e não pode ser curinga.');
+  const trustProxyValue = environment.TRUST_PROXY?.trim() || 'false';
+  const trustProxy = trustProxyValue === 'false' ? false : trustProxyValue === 'loopback' ? 'loopback' : Number(trustProxyValue);
+  if (trustProxy !== false && trustProxy !== 'loopback' && (!Number.isInteger(trustProxy) || trustProxy < 1 || trustProxy > 3)) throw new Error('TRUST_PROXY deve ser false, loopback ou um número entre 1 e 3.');
+  return {
+    production,
+    webOrigin,
+    trustProxy: trustProxy as false | 'loopback' | number,
+    accessTokenMinutes: positiveInteger(environment.ACCESS_TOKEN_TTL_MINUTES, 15, 'ACCESS_TOKEN_TTL_MINUTES', 60),
+    refreshTokenDays: positiveInteger(environment.REFRESH_TOKEN_TTL_DAYS, 30, 'REFRESH_TOKEN_TTL_DAYS', 90),
+  };
 }

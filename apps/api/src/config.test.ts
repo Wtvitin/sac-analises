@@ -7,6 +7,11 @@ describe('environment configuration', () => {
   });
 
   it('accepts a configurable PostgreSQL URL without hardcoded production values', () => {
-    expect(validateEnvironment({ DATABASE_URL: 'postgresql://example.invalid/db', JWT_SECRET: 'test-only', PORT: '3333' })).toEqual({ port: 3333 });
+    expect(validateEnvironment({ DATABASE_URL: 'postgresql://example.invalid/db', JWT_SECRET: 'test-only', PORT: '3333' })).toMatchObject({ port: 3333, webOrigin: 'http://localhost:5173', accessTokenMinutes: 15, refreshTokenDays: 30, trustProxy: false, production: false });
+  });
+
+  it('rejeita origem curinga e proxy irrestrito', () => {
+    expect(() => validateEnvironment({ DATABASE_URL: 'postgresql://example.invalid/db', JWT_SECRET: 'test-only', WEB_ORIGIN: '*' })).toThrow(/WEB_ORIGIN/);
+    expect(() => validateEnvironment({ DATABASE_URL: 'postgresql://example.invalid/db', JWT_SECRET: 'test-only', TRUST_PROXY: 'true' })).toThrow(/TRUST_PROXY/);
   });
 });

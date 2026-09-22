@@ -9,11 +9,24 @@ import { usersRouter } from './modules/users/users.routes.js';
 import { catalogRouter } from './modules/catalog/catalog.routes.js';
 import { checkDatabaseHealth } from './lib/database-health.js';
 import { notificationRouter } from './modules/notifications/notification.routes.js';
+import { getSecurityConfig } from './config.js';
+import { requireCsrf } from './modules/auth/csrf.middleware.js';
 
 export const app = express();
+const security = getSecurityConfig();
+app.disable('x-powered-by');
+app.set('trust proxy', security.trustProxy);
 app.use(helmet());
-app.use(cors({ origin: process.env.WEB_ORIGIN ?? 'http://localhost:5173' }));
+app.use(cors({ origin(origin, callback) { if (!origin || origin === security.webOrigin) return callback(null, true); return callback(new Error('Origin not allowed')); }, credentials: true }));
 app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: false, limit: '64kb' }));
+app.use((req, res, next) => {
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) && req.headers['content-length'] !== '0' && !req.is(['application/json', 'application/*+json', 'multipart/form-data', 'application/x-www-form-urlencoded'])) {
+    return res.status(415).json({ error: { code: 'UNSUPPORTED_CONTENT_TYPE', message: 'Tipo de conteúdo não suportado.' } });
+  }
+  return next();
+});
+app.use(requireCsrf);
 app.get('/health', async (_req, res) => {
   const health = await checkDatabaseHealth();
   const ready = health.connected && health.schemaReady;
@@ -31,6 +44,10 @@ app.use('/sac-records', requireAuth, sacRouter);
 app.use('/notifications', notificationRouter);
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   if (error instanceof ZodError) return res.status(422).json({ error: { code: 'VALIDATION_ERROR', details: error.issues } });
-  console.error(error);
+  if (error instanceof SyntaxError) return res.status(400).json({ error: { code: 'INVALID_JSON', message: 'Conteúdo JSON inválido.' } });
+  if (typeof error === 'object' && error && 'type' in error && error.type === 'entity.too.large') return res.status(413).json({ error: { code: 'PAYLOAD_TOO_LARGE', message: 'Conteúdo excede o limite permitido.' } });
+  if (error instanceof Error && error.message === 'Origin not allowed') return res.status(403).json({ error: { code: 'ORIGIN_REJECTED', message: 'Origem não autorizada.' } });
+  const safeError = error instanceof Error ? { name: error.name } : { name: 'UnknownError' };
+  console.error('Unhandled application error', safeError);
   return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Não foi possível concluir a operação.' } });
 });

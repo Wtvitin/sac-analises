@@ -55,6 +55,9 @@ enum AdminAuditType {
   CASES_TRANSFERRED
   PASSWORD_CHANGED
   LAST_ADMIN_BLOCKED
+  LOGIN_SUCCEEDED
+  ALL_SESSIONS_REVOKED
+  SESSION_REUSE_DETECTED
 }
 
 model User {
@@ -80,6 +83,7 @@ model User {
   notifications Notification[]
   auditsAuthored AdminAudit[] @relation("AuditActor")
   auditsReceived AdminAudit[] @relation("AuditTarget")
+  sessions      AuthSession[]
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 
@@ -273,6 +277,26 @@ model Notification {
   @@index([recipientId, createdAt])
   @@index([recipientId, readAt, createdAt])
   @@index([recordId])
+}
+
+model AuthSession {
+  id               String        @id @default(cuid())
+  userId           String
+  user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  familyId         String
+  refreshTokenHash String        @unique
+  tokenVersion     Int
+  expiresAt        DateTime
+  lastUsedAt       DateTime      @default(now())
+  revokedAt        DateTime?
+  rotatedAt        DateTime?
+  replacedById     String?       @unique
+  replacedBy       AuthSession?  @relation("SessionRotation", fields: [replacedById], references: [id], onDelete: SetNull)
+  previousSession  AuthSession?  @relation("SessionRotation")
+  createdAt        DateTime      @default(now())
+
+  @@index([userId, revokedAt, expiresAt])
+  @@index([familyId, revokedAt])
 }
 
 model AdminAudit {

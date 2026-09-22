@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mock = vi.hoisted(() => {
   const database = {
     user: { findUnique: vi.fn(), findUniqueOrThrow: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), count: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
-    sacRecord: { findMany: vi.fn(), update: vi.fn(), count: vi.fn() }, activityLog: { create: vi.fn() }, notification: { create: vi.fn() }, adminAudit: { create: vi.fn(), findMany: vi.fn() }, $executeRaw: vi.fn(),
+    sacRecord: { findMany: vi.fn(), update: vi.fn(), count: vi.fn() }, activityLog: { create: vi.fn() }, notification: { create: vi.fn() }, adminAudit: { create: vi.fn(), findMany: vi.fn() }, authSession: { updateMany: vi.fn() }, $executeRaw: vi.fn(),
   };
   const transaction = vi.fn(async (input: unknown, _options?: unknown) => typeof input === 'function' ? (input as (tx: typeof database) => unknown)(database) : Promise.all(input as Promise<unknown>[]));
   return { database, transaction };
@@ -15,7 +15,7 @@ const now = new Date('2026-09-14T15:00:00Z');
 const publicUser = { id: 'user-1', name: 'Pessoa', email: 'person@example.test', role: 'ANALYST', active: true, approvedAt: now, rejectedAt: null, lastLoginAt: null, createdAt: now };
 
 describe('gestão transacional da equipe', () => {
-  beforeEach(() => { vi.clearAllMocks(); mock.database.user.update.mockResolvedValue(publicUser); mock.database.user.updateMany.mockResolvedValue({ count: 1 }); mock.database.user.findUniqueOrThrow.mockResolvedValue(publicUser); mock.database.adminAudit.create.mockResolvedValue({ id: 'audit-1' }); mock.database.activityLog.create.mockResolvedValue({ id: 'activity-1' }); mock.database.notification.create.mockResolvedValue({ id: 'notification-1' }); mock.database.$executeRaw.mockResolvedValue(1); });
+  beforeEach(() => { vi.clearAllMocks(); mock.database.user.update.mockResolvedValue(publicUser); mock.database.user.updateMany.mockResolvedValue({ count: 1 }); mock.database.user.findUniqueOrThrow.mockResolvedValue(publicUser); mock.database.adminAudit.create.mockResolvedValue({ id: 'audit-1' }); mock.database.authSession.updateMany.mockResolvedValue({ count: 1 }); mock.database.activityLog.create.mockResolvedValue({ id: 'activity-1' }); mock.database.notification.create.mockResolvedValue({ id: 'notification-1' }); mock.database.$executeRaw.mockResolvedValue(1); });
 
   it('aprova somente como analista ou consulta e registra auditoria', async () => {
     mock.database.user.findUnique.mockResolvedValue({ ...publicUser, active: false, approvedAt: null, approvedById: null });
