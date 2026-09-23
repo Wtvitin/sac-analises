@@ -27,7 +27,14 @@ function formatCellValue(val: unknown): string {
   return String(val).trim();
 }
 
+import { validateOoxmlZip } from './ooxml-validator.js';
+
 export async function parseXlsxDocument(buffer: Buffer): Promise<RawDocumentText> {
+  const validation = validateOoxmlZip(buffer);
+  if (!validation.valid) {
+    throw new Error(validation.error || 'Planilha XLSX inválida ou com formato corrompido.');
+  }
+
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer);
 

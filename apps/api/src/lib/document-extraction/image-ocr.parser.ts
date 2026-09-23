@@ -1,16 +1,31 @@
 import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { RawDocumentText } from './document-extraction.types.js';
 
 const require = createRequire(import.meta.url);
 
 export const OCR_TIMEOUT_MS = 15000;
 
+export function getTessdataPath(): string {
+  const currentDir = dirname(fileURLToPath(import.meta.url));
+  const candidate1 = resolve(currentDir, '../../../assets/tessdata');
+  const candidate2 = resolve(process.cwd(), 'assets/tessdata');
+  const candidate3 = resolve(process.cwd(), 'apps/api/assets/tessdata');
+
+  for (const dir of [candidate1, candidate2, candidate3]) {
+    if (existsSync(resolve(dir, 'por.traineddata'))) {
+      return dir;
+    }
+  }
+
+  throw new Error('Modelo offline de OCR em português (por.traineddata) não encontrado em assets/tessdata.');
+}
+
 export async function parseImageDocument(buffer: Buffer): Promise<RawDocumentText> {
   const warnings: string[] = [];
 
-  // Enforce size safeguard (10 MB already enforced by storage/upload limit)
   if (buffer.length === 0) {
     throw new Error('Arquivo de imagem vazio.');
   }
@@ -19,19 +34,14 @@ export async function parseImageDocument(buffer: Buffer): Promise<RawDocumentTex
 
   try {
     const { createWorker } = require('tesseract.js');
-
-    // Check for local traineddata model path in assets/tessdata
-    const localTessdata = resolve(process.cwd(), 'assets/tessdata');
-    const localModelExists = existsSync(resolve(localTessdata, 'por.traineddata')) || existsSync(resolve(localTessdata, 'por.traineddata.gz'));
+    const localTessdata = getTessdataPath();
 
     const workerOptions: Record<string, unknown> = {
+      langPath: localTessdata,
+      cachePath: localTessdata,
+      gzip: false,
       logger: () => {}, // silent
     };
-
-    if (localModelExists) {
-      workerOptions.langPath = localTessdata;
-      workerOptions.cachePath = localTessdata;
-    }
 
     // Run OCR with a hard timeout of 15 seconds
     const ocrPromise = (async () => {
@@ -69,3 +79,4 @@ export async function parseImageDocument(buffer: Buffer): Promise<RawDocumentTex
     warnings,
   };
 }
+

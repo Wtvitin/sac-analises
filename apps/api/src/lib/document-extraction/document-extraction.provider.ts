@@ -5,6 +5,8 @@ import { parseImageDocument } from './image-ocr.parser.js';
 import { interpretDocumentText } from './form-interpreter.js';
 import { matchAndScoreFields } from './field-matcher.js';
 
+import { validateOoxmlZip } from './ooxml-validator.js';
+
 export function detectDocumentFormat(buffer: Buffer, filename: string): 'PDF' | 'IMAGE' | 'XLSX' {
   if (buffer.length < 4) {
     throw new Error('Arquivo muito pequeno ou vazio para identificação.');
@@ -28,6 +30,10 @@ export function detectDocumentFormat(buffer: Buffer, filename: string): 'PDF' | 
   // XLSX magic bytes: PK\x03\x04 (ZIP) and filename ends with .xlsx
   if (buffer[0] === 0x50 && buffer[1] === 0x4b && buffer[2] === 0x03 && buffer[3] === 0x04) {
     if (filename.toLowerCase().endsWith('.xlsx')) {
+      const validation = validateOoxmlZip(buffer);
+      if (!validation.valid) {
+        throw new Error(validation.error || 'Planilha XLSX inválida ou com formato corrompido.');
+      }
       return 'XLSX';
     }
   }
