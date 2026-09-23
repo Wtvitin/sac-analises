@@ -86,6 +86,7 @@ model User {
   sessions      AuthSession[]
   attachmentsAuthored Attachment[] @relation("AttachmentAuthor")
   attachmentsDeleted  Attachment[] @relation("AttachmentDeleter")
+  documentImports     DocumentImport[]
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 
@@ -335,4 +336,35 @@ model AdminAudit {
   @@index([targetUserId, createdAt])
   @@index([actorId, createdAt])
   @@index([type, createdAt])
+}
+
+enum DocumentImportStatus {
+  PROCESSING
+  READY_FOR_REVIEW
+  FAILED
+  CONFIRMED
+  EXPIRED
+  CANCELLED
+}
+
+model DocumentImport {
+  id            String               @id @default(cuid())
+  userId        String
+  user          User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sha256        String
+  format        String
+  status        DocumentImportStatus @default(PROCESSING)
+  storageKey    String
+  originalName  String
+  extractedData Json?
+  error         String?
+  expiresAt     DateTime
+  confirmedAt   DateTime?
+  recordId      String?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  @@index([userId, status])
+  @@index([sha256])
+  @@index([expiresAt])
 }

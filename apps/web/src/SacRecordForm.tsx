@@ -1,11 +1,16 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
-import { AlertTriangle, FileText, LoaderCircle, PackagePlus, Paperclip, Plus, Trash2, X } from 'lucide-react';
+import {
+  AlertCircle, AlertTriangle, Check, FileCheck, FileText, LoaderCircle,
+  PackagePlus, Paperclip, PenTool, Plus, Trash2, UploadCloud, X,
+} from 'lucide-react';
 import { apiRequest } from './api';
 import type { OperationalIndicators } from './data';
 import {
   ACCEPTED_FILE_TYPES, createEmptyItem, createEmptySacForm, hasUnsavedSacChanges, sacFormPayload,
   toLocalDateTimeInput, validateAttachments, validateSacForm, type SacFormErrors, type SacFormValues,
 } from './sac-form';
+import { DocumentImportDropzone } from './DocumentImportDropzone';
+import './document-import.css';
 
 type Option = { id: string; name: string; active?: boolean };
 type CatalogList = { items: Option[] };
@@ -18,6 +23,35 @@ export type DetailedRecord = {
   attachments: Array<{ id: string; originalName: string; mimeType: string; sizeBytes: number; status?: 'ACTIVE' | 'QUARANTINED' | 'PENDING_DELETION'; createdAt?: string; author?: { id: string; name: string } | null }>;
   operational: OperationalIndicators;
 };
+
+function ConfidenceTag({ field }: { field?: { confidence?: string; sourceSnippet?: string; note?: string } | null }) {
+  if (!field || !field.confidence) return null;
+  if (field.confidence === 'IDENTIFIED') {
+    return (
+      <span className="sac-confidence-badge sac-confidence-badge--identified" title={`Origem: "${field.sourceSnippet}"`}>
+        <Check style={{ width: 12, height: 12 }} /> Identificado
+      </span>
+    );
+  }
+  if (field.confidence === 'REVIEW_REQUIRED') {
+    return (
+      <span className="sac-confidence-badge sac-confidence-badge--review" title={field.note || `Origem: "${field.sourceSnippet}"`}>
+        <AlertCircle style={{ width: 12, height: 12 }} /> Revisar
+      </span>
+    );
+  }
+  return null;
+}
+
+function SnippetHint({ field }: { field?: { sourceSnippet?: string; note?: string } | null }) {
+  if (!field || (!field.sourceSnippet && !field.note)) return null;
+  return (
+    <>
+      {field.sourceSnippet && <span className="sac-field-snippet" title={field.sourceSnippet}>Origem: &ldquo;{field.sourceSnippet}&rdquo;</span>}
+      {field.note && <span className="sac-field-snippet" style={{ color: 'var(--color-warning)' }}>{field.note}</span>}
+    </>
+  );
+}
 
 function toDateInput(value: string) {
   const date = new Date(value); const pad = (part: number) => String(part).padStart(2, '0');
@@ -47,9 +81,101 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
   const [loading, setLoading] = useState(true); const [optionsError, setOptionsError] = useState(''); const [saving, setSaving] = useState(false); const [apiError, setApiError] = useState(''); const [errors, setErrors] = useState<SacFormErrors>({});
   const [files, setFiles] = useState<File[]>([]); const [fileError, setFileError] = useState(''); const [duplicateExternal, setDuplicateExternal] = useState(false); const [allowDuplicate, setAllowDuplicate] = useState(false);
   const [discarding, setDiscarding] = useState(false); const [removingItem, setRemovingItem] = useState<number | null>(null);
+
+  // Document Import state
+  const [entryMode, setEntryMode] = useState<'manual' | 'import'>('manual');
+  const [importSessionId, setImportSessionId] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importedFile, setImportedFile] = useState<{ name: string; format: string } | null>(null);
+  const [extractedData, setExtractedData] = useState<any | null>(null);
+  const [preserveImportAsAttachment, setPreserveImportAsAttachment] = useState(true);
+
   const modalRef = useRef<HTMLFormElement>(null); const firstFieldRef = useRef<HTMLInputElement>(null); const idempotencyKey = useRef(crypto.randomUUID());
-  const dirty = useMemo(() => hasUnsavedSacChanges(form, initial, files), [form, initial, files]);
+  const dirty = useMemo(() => Boolean(importSessionId) || hasUnsavedSacChanges(form, initial, files), [importSessionId, form, initial, files]);
   const editing = Boolean(recordId);
+
+  const handleDiscardImport = async () => {
+    if (importSessionId) {
+      await apiRequest(`/document-imports/${importSessionId}`, { method: 'DELETE' }).catch(() => {});
+    }
+    setImportSessionId(null);
+    setImportedFile(null);
+    setExtractedData(null);
+    setForm(initial);
+    setEntryMode('manual');
+  };
+
+  const handleImportFile = async (file: File) => {
+    setImporting(true);
+    setImportError(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await apiRequest<{ data: any }>('/document-imports', {
+        method: 'POST',
+        body: formData,
+      });
+      const session = res.data;
+      if (session.status === 'READY_FOR_REVIEW' && session.extractedData) {
+        setImportSessionId(session.id);
+        setImportedFile({ name: session.originalName, format: session.format });
+        setExtractedData(session.extractedData);
+
+        const ext = session.extractedData;
+        setForm(current => {
+          let matchedChannelId = current.channelId;
+          if (ext.channel?.value) {
+            const rawChan = String(ext.channel.value).toLowerCase().trim();
+            const matched = channels.find(c => c.name.toLowerCase().includes(rawChan) || rawChan.includes(c.name.toLowerCase()));
+            if (matched) matchedChannelId = matched.id;
+          }
+
+          let formattedOpenedAt = current.openedAt;
+          if (ext.openedAt?.value) {
+            const parsed = new Date(ext.openedAt.value);
+            if (!isNaN(parsed.getTime())) {
+              formattedOpenedAt = toLocalDateTimeInput(parsed);
+            }
+          }
+
+          const newItems = (ext.items && ext.items.length > 0)
+            ? ext.items.map((it: any) => ({
+                key: crypto.randomUUID(),
+                code: String(it.code || ''),
+                description: String(it.description || ''),
+                batch: String(it.batch || ''),
+                quantity: String(it.quantity || 1),
+                note: '',
+              }))
+            : current.items;
+
+          return {
+            ...current,
+            customerName: ext.customerName?.value || current.customerName,
+            orderNumber: ext.orderNumber?.value || current.orderNumber,
+            externalTicket: ext.externalTicket?.value || current.externalTicket,
+            description: ext.description?.value || current.description,
+            channelId: matchedChannelId,
+            openedAt: formattedOpenedAt,
+            items: newItems,
+          };
+        });
+
+        if (ext.candidateDuplicateCases && ext.candidateDuplicateCases.length > 0) {
+          setDuplicateExternal(true);
+        }
+
+        setEntryMode('manual');
+      } else if (session.status === 'FAILED') {
+        setImportError(session.error || 'Falha ao interpretar o formulário.');
+      }
+    } catch (err: any) {
+      setImportError(err instanceof Error ? err.message : 'Não foi possível ler o documento.');
+    } finally {
+      setImporting(false);
+    }
+  };
 
   useEffect(() => {
     let active = true; setLoading(true); setOptionsError('');
@@ -93,7 +219,17 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
     window.addEventListener('beforeunload', beforeUnload); return () => window.removeEventListener('beforeunload', beforeUnload);
   }, [dirty]);
 
-  const requestClose = () => dirty ? setDiscarding(true) : onClose();
+  const requestClose = () => {
+    if (dirty) {
+      setDiscarding(true);
+    } else {
+      if (importSessionId) {
+        apiRequest(`/document-imports/${importSessionId}`, { method: 'DELETE' }).catch(() => {});
+      }
+      onClose();
+    }
+  };
+
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (event.key === 'Escape') { event.preventDefault(); if (discarding) setDiscarding(false); else if (removingItem !== null) setRemovingItem(null); else requestClose(); return; }
@@ -138,7 +274,7 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
     setErrors(nextErrors); setApiError(''); if (Object.keys(nextErrors).length) { focusFirstError(nextErrors); return; }
     setSaving(true);
     try {
-      const payload = sacFormPayload(form, allowDuplicate, record?.updatedAt);
+      const payload = sacFormPayload(form, allowDuplicate, record?.updatedAt, importSessionId, preserveImportAsAttachment);
       const body = new FormData(); body.append('payload', JSON.stringify(payload)); files.forEach(file => body.append('files', file));
       const saved = await apiRequest<DetailedRecord>(recordId ? `/sac-records/${recordId}` : '/sac-records', { method: recordId ? 'PATCH' : 'POST', body, headers: recordId ? {} : { 'Idempotency-Key': idempotencyKey.current } });
       onSaved(saved, !recordId);
@@ -147,19 +283,236 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
   };
 
   return <div className="overlay" onMouseDown={event => { if (event.target === event.currentTarget) requestClose(); }}><form ref={modalRef} className="modal sac-form-modal" onSubmit={submit} aria-labelledby="sac-form-title"><header className="modal-head"><div><h2 id="sac-form-title">{editing ? `Editar ${record?.ticket ?? 'registro'}` : 'Novo registro'}</h2><p>{editing ? 'O código interno é imutável.' : 'O código interno será gerado com segurança ao salvar.'}</p></div><button type="button" className="icon-btn" onClick={requestClose} aria-label="Fechar formulário"><X /></button></header>
-    {loading ? <div className="sac-form-loading" role="status"><LoaderCircle />Carregando formulário...</div> : optionsError && !reasons.length && !channels.length ? <div className="list-error"><AlertTriangle /><div><strong>Não foi possível preparar o formulário</strong><span>{optionsError}</span></div></div> : <div className="sac-form-scroll">
-      {(!reasons.length || !channels.length) && <section className="sac-catalog-warning" role="alert"><AlertTriangle /><div><strong>Cadastros necessários</strong><p>{!reasons.length && 'Cadastre pelo menos um motivo antes de criar um registro. '}{!channels.length && 'Cadastre pelo menos um canal antes de criar um registro.'}</p></div><button type="button" className="secondary" onClick={onOpenCatalogs}>Abrir Cadastros</button></section>}
-      <fieldset><legend>1. Identificação</legend><div className="sac-form-grid"><label>Cliente *<input ref={firstFieldRef} data-field="customerName" list="customer-options" value={form.customerName} maxLength={160} onChange={event => change('customerName', event.target.value)} aria-invalid={Boolean(errors.customerName)} /><datalist id="customer-options">{customers.map(customer => <option value={customer.name} key={customer.id} />)}</datalist>{errors.customerName && <small>{errors.customerName}</small>}<em>Pesquise um cliente existente ou informe um nome para cadastro mínimo.</em></label><label>Número do pedido *<input data-field="orderNumber" value={form.orderNumber} maxLength={40} onChange={event => change('orderNumber', event.target.value)} aria-invalid={Boolean(errors.orderNumber)} />{errors.orderNumber && <small>{errors.orderNumber}</small>}</label><label>Ticket ou protocolo externo<input data-field="externalTicket" value={form.externalTicket} maxLength={80} onBlur={checkExternal} onChange={event => change('externalTicket', event.target.value)} aria-invalid={Boolean(errors.externalTicket)} />{errors.externalTicket && <small>{errors.externalTicket}</small>}{duplicateExternal && <span className="sac-duplicate-warning"><span>Possível duplicidade encontrada.</span><span className="sac-duplicate-confirm"><input type="checkbox" aria-label="Confirmar possível duplicidade" checked={allowDuplicate} onChange={event => setAllowDuplicate(event.target.checked)} />Confirmo que desejo continuar.</span></span>}</label><label>Canal *<select data-field="channelId" value={form.channelId} onChange={event => change('channelId', event.target.value)} aria-invalid={Boolean(errors.channelId)}><option value="">Selecione conscientemente</option>{channels.map(channel => <option value={channel.id} key={channel.id}>{channel.name}</option>)}</select>{errors.channelId && <small>{errors.channelId}</small>}</label><label>Data de abertura *<input data-field="openedAt" type="datetime-local" value={form.openedAt} onChange={event => change('openedAt', event.target.value)} aria-invalid={Boolean(errors.openedAt)} />{errors.openedAt && <small>{errors.openedAt}</small>}</label>{editing && <label>Código interno<input value={record?.ticket ?? ''} disabled /></label>}</div></fieldset>
-      <fieldset><legend>2. Classificação da ocorrência</legend><div className="sac-form-grid"><label>Motivo *<select data-field="reasonId" value={form.reasonId} onChange={event => change('reasonId', event.target.value)} aria-invalid={Boolean(errors.reasonId)}><option value="">Selecione</option>{reasons.map(reason => <option value={reason.id} key={reason.id}>{reason.name}</option>)}</select>{errors.reasonId && <small>{errors.reasonId}</small>}</label><label>Submotivo<select value={form.subreasonId} onChange={event => change('subreasonId', event.target.value)} disabled={!form.reasonId}><option value="">Sem submotivo</option>{subreasons.map(subreason => <option value={subreason.id} key={subreason.id}>{subreason.name}</option>)}</select></label><label>Prioridade *<select data-field="priority" value={form.priority} disabled={editing} onChange={event => change('priority', event.target.value as SacFormValues['priority'])} aria-invalid={Boolean(errors.priority)}><option value="">Selecione conscientemente</option><option value="LOW">Baixa</option><option value="MEDIUM">Média</option><option value="HIGH">Alta</option><option value="CRITICAL">Crítica</option></select>{errors.priority && <small>{errors.priority}</small>}{editing && <em>Altere pela ação operacional do caso.</em>}</label></div></fieldset>
-      <fieldset><legend>3. Descrição</legend><div className="sac-form-grid"><label className="full">Descrição completa *<textarea data-field="description" value={form.description} maxLength={5000} onChange={event => change('description', event.target.value)} aria-invalid={Boolean(errors.description)} />{errors.description && <small>{errors.description}</small>}</label><label className="full">Observação interna<textarea value={form.internalNote} maxLength={2000} onChange={event => change('internalNote', event.target.value)} /></label></div></fieldset>
-      <fieldset><legend>4. Atribuição e prazo</legend><div className="sac-form-grid"><label>Responsável<select value={form.assigneeId} disabled={editing} onChange={event => change('assigneeId', event.target.value)}><option value="">Sem responsável</option>{assignees.map(user => <option value={user.id} key={user.id}>{user.name}</option>)}</select>{editing && <em>Altere pela ação operacional do caso.</em>}</label><label>Prazo de resolução *<input data-field="dueDate" type="date" value={form.dueDate} disabled={editing} onChange={event => change('dueDate', event.target.value)} aria-invalid={Boolean(errors.dueDate)} />{errors.dueDate && <small>{errors.dueDate}</small>}<em>{editing ? 'Altere pela ação operacional do caso.' : 'O prazo representa o fim do dia selecionado.'}</em></label></div></fieldset>
-      <fieldset><legend>5. Itens envolvidos</legend><div className="sac-section-heading"><p>Opcional. Adicione somente produtos relacionados à ocorrência.</p><button type="button" className="secondary" onClick={() => change('items', [...form.items, createEmptyItem()])}><PackagePlus />Adicionar item</button></div><div className="sac-items">{form.items.map((item, index) => <article key={item.key}><header><strong>Item {index + 1}</strong><button type="button" className="icon-btn" aria-label={`Remover item ${index + 1}`} onClick={() => requestRemoveItem(index)}><Trash2 /></button></header><div className="sac-form-grid"><label>Código ou SKU *<input data-field={`item-${index}`} value={item.code} maxLength={80} onChange={event => changeItem(index, 'code', event.target.value)} /></label><label>Descrição *<input value={item.description} maxLength={300} onChange={event => changeItem(index, 'description', event.target.value)} /></label><label>Lote<input value={item.batch} maxLength={80} onChange={event => changeItem(index, 'batch', event.target.value)} /></label><label>Quantidade reclamada *<input type="number" min="0.001" step="0.001" value={item.quantity} onChange={event => changeItem(index, 'quantity', event.target.value)} /></label><label className="full">Observação<input value={item.note} maxLength={500} onChange={event => changeItem(index, 'note', event.target.value)} /></label>{errors[`item-${index}`] && <small className="full">{errors[`item-${index}`]}</small>}</div></article>)}</div></fieldset>
-      <fieldset><legend>6. Evidências ({files.length + (record?.attachments.length ?? 0)}/5)</legend><label className="sac-upload"><Paperclip /><span><strong>Selecionar evidências</strong><small>PDF, JPG, JPEG ou PNG · até 5 arquivos · 10 MB por arquivo</small></span><input type="file" accept={ACCEPTED_FILE_TYPES.join(',')} multiple onChange={addFiles} disabled={saving} /></label>{fileError && <p className="sac-field-error" role="alert">{fileError}</p>}<div className="sac-files">{record?.attachments.map(file => <article key={file.id}><FileText /><span><strong>{file.originalName}</strong><small>{file.mimeType} · {(file.sizeBytes / 1024).toFixed(1)} KB · já salvo</small></span></article>)}{files.map((file, index) => <article key={`${file.name}-${index}`}><FileText /><span><strong>{file.name}</strong><small>{file.type || 'arquivo'} · {(file.size / 1024).toFixed(1)} KB · pronto para envio</small></span><button type="button" className="icon-btn" aria-label={`Remover ${file.name}`} onClick={() => setFiles(current => current.filter((_, fileIndex) => fileIndex !== index))} disabled={saving}><X /></button></article>)}</div></fieldset>
-      <fieldset><legend>7. Análise interna</legend><div className="sac-form-grid"><label className="full">Causa identificada<textarea value={form.identifiedCause} maxLength={2000} onChange={event => change('identifiedCause', event.target.value)} /></label><label>Área responsável<input value={form.responsibleArea} maxLength={160} onChange={event => change('responsibleArea', event.target.value)} /></label><label className="full">Ação corretiva<textarea value={form.correctiveAction} maxLength={2000} onChange={event => change('correctiveAction', event.target.value)} /></label></div></fieldset>
-      {optionsError && <p className="sac-form-api-error" role="alert">{optionsError}</p>}{apiError && <p className="sac-form-api-error" role="alert">{apiError}</p>}
-    </div>}
-    <footer className="form-footer"><button type="button" className="secondary" onClick={requestClose} disabled={saving}>Cancelar</button><button type="submit" className="primary" disabled={saving || loading}>{saving ? <><LoaderCircle className="spin" />{editing ? 'Salvando...' : 'Criando...'}</> : editing ? 'Salvar alterações' : 'Criar registro'}</button></footer></form>
-    {discarding && <Confirm title="Descartar alterações?" text="Os dados preenchidos e arquivos selecionados não serão salvos." action="Descartar" onCancel={() => setDiscarding(false)} onConfirm={onClose} />}
+    {loading ? <div className="sac-form-loading" role="status"><LoaderCircle />Carregando formulário...</div> : optionsError && !reasons.length && !channels.length ? <div className="list-error"><AlertTriangle /><div><strong>Não foi possível preparar o formulário</strong><span>{optionsError}</span></div></div> : <>
+      {!editing && !importSessionId && (
+        <div className="sac-mode-switcher" role="tablist" aria-label="Modo de preenchimento">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={entryMode === 'manual'}
+            className={`sac-mode-btn ${entryMode === 'manual' ? 'active' : ''}`}
+            onClick={() => setEntryMode('manual')}
+          >
+            <PenTool style={{ width: 16, height: 16 }} />
+            Preencher manualmente
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={entryMode === 'import'}
+            className={`sac-mode-btn ${entryMode === 'import' ? 'active' : ''}`}
+            onClick={() => setEntryMode('import')}
+          >
+            <UploadCloud style={{ width: 16, height: 16 }} />
+            Importar formulário
+          </button>
+        </div>
+      )}
+
+      {entryMode === 'import' && !importSessionId ? (
+        <div className="sac-form-scroll">
+          <DocumentImportDropzone
+            onFileSelected={handleImportFile}
+            isProcessing={importing}
+            onCancel={() => { setImporting(false); setEntryMode('manual'); }}
+            error={importError}
+            onClearError={() => setImportError(null)}
+          />
+        </div>
+      ) : (
+        <div className="sac-form-scroll">
+          {(!reasons.length || !channels.length) && <section className="sac-catalog-warning" role="alert"><AlertTriangle /><div><strong>Cadastros necessários</strong><p>{!reasons.length && 'Cadastre pelo menos um motivo antes de criar um registro. '}{!channels.length && 'Cadastre pelo menos um canal antes de criar um registro.'}</p></div><button type="button" className="secondary" onClick={onOpenCatalogs}>Abrir Cadastros</button></section>}
+
+          {importSessionId && importedFile && (
+            <div className="sac-import-banner">
+              <div className="sac-import-banner-content">
+                <FileCheck className="sac-import-banner-icon" />
+                <div className="sac-import-banner-text">
+                  <strong>
+                    {importedFile.name}
+                    <span className="sac-format-badge">{importedFile.format}</span>
+                  </strong>
+                  <small>
+                    Dados extraídos automaticamente do formulário. Revise os campos antes de confirmar.
+                  </small>
+                </div>
+              </div>
+              <button type="button" className="sac-import-discard-btn" onClick={handleDiscardImport} disabled={saving}>
+                Descartar importação
+              </button>
+            </div>
+          )}
+
+          {extractedData?.candidateDuplicateCases && extractedData.candidateDuplicateCases.length > 0 && (
+            <div className="sac-duplicate-cases-alert" role="alert">
+              <header>
+                <AlertTriangle style={{ width: 16, height: 16 }} />
+                Possível duplicidade identificada
+              </header>
+              <p style={{ margin: '0 0 6px', fontSize: 'var(--font-size-secondary)' }}>
+                Foram encontrados chamados anteriores semelhantes no sistema:
+              </p>
+              <ul>
+                {extractedData.candidateDuplicateCases.map((c: any) => (
+                  <li key={c.id}>
+                    <strong>{c.ticket}</strong> — {c.customerName} {c.orderNumber ? `(Pedido: ${c.orderNumber})` : ''} {c.externalTicket ? `(Atendimento: ${c.externalTicket})` : ''}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {extractedData?.candidateCustomer && (
+            <div className="sac-catalog-warning" style={{ borderColor: 'var(--color-accent)', background: 'rgba(2, 132, 199, 0.08)' }}>
+              <Check style={{ color: 'var(--color-accent)' }} />
+              <div>
+                <strong style={{ color: 'var(--color-primary)' }}>Cliente identificado na base</strong>
+                <p>O cliente <strong>{extractedData.candidateCustomer.name}</strong> já possui cadastro e será reutilizado sem duplicidade.</p>
+              </div>
+            </div>
+          )}
+
+          <fieldset><legend>1. Identificação</legend><div className="sac-form-grid">
+            <label>
+              <div className="sac-field-header">
+                <span>Cliente *</span>
+                <ConfidenceTag field={extractedData?.customerName} />
+              </div>
+              <input ref={firstFieldRef} data-field="customerName" list="customer-options" value={form.customerName} maxLength={160} onChange={event => change('customerName', event.target.value)} aria-invalid={Boolean(errors.customerName)} />
+              <datalist id="customer-options">{customers.map(customer => <option value={customer.name} key={customer.id} />)}</datalist>
+              <SnippetHint field={extractedData?.customerName} />
+              {errors.customerName && <small>{errors.customerName}</small>}
+              <em>Pesquise um cliente existente ou informe um nome para cadastro mínimo.</em>
+            </label>
+
+            <label>
+              <div className="sac-field-header">
+                <span>Número do pedido *</span>
+                <ConfidenceTag field={extractedData?.orderNumber} />
+              </div>
+              <input data-field="orderNumber" value={form.orderNumber} maxLength={40} onChange={event => change('orderNumber', event.target.value)} aria-invalid={Boolean(errors.orderNumber)} />
+              <SnippetHint field={extractedData?.orderNumber} />
+              {extractedData?.orderNumber?.candidateOrderNumbers && extractedData.orderNumber.candidateOrderNumbers.length > 1 && (
+                <div className="sac-candidates-helper">
+                  <span>Outros pedidos detectados:</span>
+                  {extractedData.orderNumber.candidateOrderNumbers.map((num: string) => (
+                    <button key={num} type="button" className="sac-candidate-chip" onClick={() => change('orderNumber', num)}>
+                      {num}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {errors.orderNumber && <small>{errors.orderNumber}</small>}
+            </label>
+
+            <label>
+              <div className="sac-field-header">
+                <span>Ticket ou protocolo externo</span>
+                <ConfidenceTag field={extractedData?.externalTicket} />
+              </div>
+              <input data-field="externalTicket" value={form.externalTicket} maxLength={80} onBlur={checkExternal} onChange={event => change('externalTicket', event.target.value)} aria-invalid={Boolean(errors.externalTicket)} />
+              <SnippetHint field={extractedData?.externalTicket} />
+              {errors.externalTicket && <small>{errors.externalTicket}</small>}
+              {duplicateExternal && <span className="sac-duplicate-warning"><span>Possível duplicidade encontrada.</span><span className="sac-duplicate-confirm"><input type="checkbox" aria-label="Confirmar possível duplicidade" checked={allowDuplicate} onChange={event => setAllowDuplicate(event.target.checked)} />Confirmo que desejo continuar.</span></span>}
+            </label>
+
+            <label>
+              <div className="sac-field-header">
+                <span>Canal *</span>
+                <ConfidenceTag field={extractedData?.channel} />
+              </div>
+              <select data-field="channelId" value={form.channelId} onChange={event => change('channelId', event.target.value)} aria-invalid={Boolean(errors.channelId)}>
+                <option value="">Selecione conscientemente</option>
+                {channels.map(channel => <option value={channel.id} key={channel.id}>{channel.name}</option>)}
+              </select>
+              <SnippetHint field={extractedData?.channel} />
+              {errors.channelId && <small>{errors.channelId}</small>}
+            </label>
+
+            <label>
+              <div className="sac-field-header">
+                <span>Data de abertura *</span>
+                <ConfidenceTag field={extractedData?.openedAt} />
+              </div>
+              <input data-field="openedAt" type="datetime-local" value={form.openedAt} onChange={event => change('openedAt', event.target.value)} aria-invalid={Boolean(errors.openedAt)} />
+              <SnippetHint field={extractedData?.openedAt} />
+              {errors.openedAt && <small>{errors.openedAt}</small>}
+            </label>
+
+            {editing && <label>Código interno<input value={record?.ticket ?? ''} disabled /></label>}
+          </div></fieldset>
+
+          <fieldset><legend>2. Classificação da ocorrência</legend><div className="sac-form-grid">
+            <label>Motivo *<select data-field="reasonId" value={form.reasonId} onChange={event => change('reasonId', event.target.value)} aria-invalid={Boolean(errors.reasonId)}><option value="">Selecione</option>{reasons.map(reason => <option value={reason.id} key={reason.id}>{reason.name}</option>)}</select>{errors.reasonId && <small>{errors.reasonId}</small>}</label>
+            <label>Submotivo<select value={form.subreasonId} onChange={event => change('subreasonId', event.target.value)} disabled={!form.reasonId}><option value="">Sem submotivo</option>{subreasons.map(subreason => <option value={subreason.id} key={subreason.id}>{subreason.name}</option>)}</select></label>
+            <label>Prioridade *<select data-field="priority" value={form.priority} disabled={editing} onChange={event => change('priority', event.target.value as SacFormValues['priority'])} aria-invalid={Boolean(errors.priority)}><option value="">Selecione conscientemente</option><option value="LOW">Baixa</option><option value="MEDIUM">Média</option><option value="HIGH">Alta</option><option value="CRITICAL">Crítica</option></select>{errors.priority && <small>{errors.priority}</small>}{editing && <em>Altere pela ação operacional do caso.</em>}</label>
+          </div></fieldset>
+
+          <fieldset><legend>3. Descrição</legend><div className="sac-form-grid">
+            <label className="full">
+              <div className="sac-field-header">
+                <span>Descrição completa *</span>
+                <ConfidenceTag field={extractedData?.description} />
+              </div>
+              <textarea data-field="description" value={form.description} maxLength={5000} onChange={event => change('description', event.target.value)} aria-invalid={Boolean(errors.description)} />
+              <SnippetHint field={extractedData?.description} />
+              {errors.description && <small>{errors.description}</small>}
+            </label>
+            <label className="full">Observação interna<textarea value={form.internalNote} maxLength={2000} onChange={event => change('internalNote', event.target.value)} /></label>
+          </div></fieldset>
+
+          <fieldset><legend>4. Atribuição e prazo</legend><div className="sac-form-grid">
+            <label>Responsável<select value={form.assigneeId} disabled={editing} onChange={event => change('assigneeId', event.target.value)}><option value="">Sem responsável</option>{assignees.map(user => <option value={user.id} key={user.id}>{user.name}</option>)}</select>{editing && <em>Altere pela ação operacional do caso.</em>}</label>
+            <label>Prazo de resolução *<input data-field="dueDate" type="date" value={form.dueDate} disabled={editing} onChange={event => change('dueDate', event.target.value)} aria-invalid={Boolean(errors.dueDate)} />{errors.dueDate && <small>{errors.dueDate}</small>}<em>{editing ? 'Altere pela ação operacional do caso.' : 'O prazo representa o fim do dia selecionado.'}</em></label>
+          </div></fieldset>
+
+          <fieldset><legend>5. Itens envolvidos</legend><div className="sac-section-heading"><p>Opcional. Adicione somente produtos relacionados à ocorrência.</p><button type="button" className="secondary" onClick={() => change('items', [...form.items, createEmptyItem()])}><PackagePlus />Adicionar item</button></div><div className="sac-items">{form.items.map((item, index) => <article key={item.key}><header><strong>Item {index + 1}</strong><button type="button" className="icon-btn" aria-label={`Remover item ${index + 1}`} onClick={() => requestRemoveItem(index)}><Trash2 /></button></header><div className="sac-form-grid"><label>Código ou SKU *<input data-field={`item-${index}`} value={item.code} maxLength={80} onChange={event => changeItem(index, 'code', event.target.value)} /></label><label>Descrição *<input value={item.description} maxLength={300} onChange={event => changeItem(index, 'description', event.target.value)} /></label><label>Lote<input value={item.batch} maxLength={80} onChange={event => changeItem(index, 'batch', event.target.value)} /></label><label>Quantidade reclamada *<input type="number" min="0.001" step="0.001" value={item.quantity} onChange={event => changeItem(index, 'quantity', event.target.value)} /></label><label className="full">Observação<input value={item.note} maxLength={500} onChange={event => changeItem(index, 'note', event.target.value)} /></label>{errors[`item-${index}`] && <small className="full">{errors[`item-${index}`]}</small>}</div></article>)}</div></fieldset>
+
+          <fieldset><legend>6. Evidências ({files.length + (record?.attachments.length ?? 0)}/5)</legend>
+            <label className="sac-upload"><Paperclip /><span><strong>Selecionar evidências</strong><small>PDF, JPG, JPEG ou PNG · até 5 arquivos · 10 MB por arquivo</small></span><input type="file" accept={ACCEPTED_FILE_TYPES.join(',')} multiple onChange={addFiles} disabled={saving} /></label>
+            {fileError && <p className="sac-field-error" role="alert">{fileError}</p>}
+            {importSessionId && importedFile && (
+              <label className="sac-preserve-option">
+                <input
+                  type="checkbox"
+                  checked={preserveImportAsAttachment}
+                  onChange={(e) => setPreserveImportAsAttachment(e.target.checked)}
+                />
+                Anexar o formulário original ({importedFile.name}) como evidência do chamado
+              </label>
+            )}
+            <div className="sac-files">
+              {record?.attachments.map(file => <article key={file.id}><FileText /><span><strong>{file.originalName}</strong><small>{file.mimeType} · {(file.sizeBytes / 1024).toFixed(1)} KB · já salvo</small></span></article>)}
+              {files.map((file, index) => <article key={`${file.name}-${index}`}><FileText /><span><strong>{file.name}</strong><small>{file.type || 'arquivo'} · {(file.size / 1024).toFixed(1)} KB · pronto para envio</small></span><button type="button" className="icon-btn" aria-label={`Remover ${file.name}`} onClick={() => setFiles(current => current.filter((_, fileIndex) => fileIndex !== index))} disabled={saving}><X /></button></article>)}
+            </div>
+          </fieldset>
+
+          <fieldset><legend>7. Análise interna</legend><div className="sac-form-grid"><label className="full">Causa identificada<textarea value={form.identifiedCause} maxLength={2000} onChange={event => change('identifiedCause', event.target.value)} /></label><label>Área responsável<input value={form.responsibleArea} maxLength={160} onChange={event => change('responsibleArea', event.target.value)} /></label><label className="full">Ação corretiva<textarea value={form.correctiveAction} maxLength={2000} onChange={event => change('correctiveAction', event.target.value)} /></label></div></fieldset>
+          {optionsError && <p className="sac-form-api-error" role="alert">{optionsError}</p>}
+          {apiError && <p className="sac-form-api-error" role="alert">{apiError}</p>}
+        </div>
+      )}
+    </>}
+    <footer className="form-footer">
+      <button type="button" className="secondary" onClick={requestClose} disabled={saving}>Cancelar</button>
+      <button type="submit" className="primary" disabled={saving || loading || (entryMode === 'import' && !importSessionId)}>
+        {saving ? (
+          <><LoaderCircle className="spin" />{editing ? 'Salvando...' : 'Criando...'}</>
+        ) : editing ? (
+          'Salvar alterações'
+        ) : importSessionId ? (
+          'Revisar e criar registro'
+        ) : (
+          'Criar registro'
+        )}
+      </button>
+    </footer></form>
+    {discarding && <Confirm title="Descartar alterações?" text="Os dados preenchidos e arquivos selecionados não serão salvos." action="Descartar" onCancel={() => setDiscarding(false)} onConfirm={async () => {
+      if (importSessionId) {
+        await apiRequest(`/document-imports/${importSessionId}`, { method: 'DELETE' }).catch(() => {});
+      }
+      onClose();
+    }} />}
     {removingItem !== null && <Confirm title="Remover item?" text="As informações preenchidas neste item serão descartadas." action="Remover item" onCancel={() => setRemovingItem(null)} onConfirm={() => removeItem(removingItem)} />}
   </div>;
 }

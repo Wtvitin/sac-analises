@@ -13,6 +13,7 @@ import { getSecurityConfig } from './config.js';
 import { requireCsrf } from './modules/auth/csrf.middleware.js';
 import { analyticsRouter } from './modules/analytics/analytics.routes.js';
 import { attachmentRouter } from './modules/attachments/attachment.routes.js';
+import { documentImportRouter } from './modules/document-imports/document-import.routes.js';
 
 export const app = express();
 const security = getSecurityConfig();
@@ -46,6 +47,7 @@ app.use('/sac-records', requireAuth, sacRouter);
 app.use('/notifications', notificationRouter);
 app.use('/analytics', analyticsRouter);
 app.use('/attachments', attachmentRouter);
+app.use('/document-imports', documentImportRouter);
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   if (error instanceof ZodError) return res.status(422).json({ error: { code: 'VALIDATION_ERROR', details: error.issues } });
   if (error instanceof SyntaxError) return res.status(400).json({ error: { code: 'INVALID_JSON', message: 'Conteúdo JSON inválido.' } });

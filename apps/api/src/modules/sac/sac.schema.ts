@@ -71,6 +71,8 @@ function validDates(input: { openedAt: Date; dueAt: Date }) { return input.dueAt
 export const createSacRecordSchema = z.object({
   ...sacRecordFields,
   allowDuplicateExternalTicket: z.boolean().default(false),
+  importSessionId: z.string().trim().optional(),
+  preserveImportAsAttachment: z.boolean().default(false),
 }).refine(validDates, { path: ['dueAt'], message: 'O prazo não pode ser anterior à data de abertura.' });
 
 export const updateSacRecordSchema = z.object({

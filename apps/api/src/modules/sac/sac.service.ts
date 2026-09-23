@@ -6,6 +6,7 @@ import { assertCanCancel, assertCanComplete, assertCanReactivate, assertCanReope
 import { classifyOperationalAttention, operationalBoundaries } from '../../domain/operational-attention.js';
 import { normalizeCatalogName } from '../catalog/catalog.schema.js';
 import { createCaseNotification } from '../notifications/notification.service.js';
+import { confirmDocumentImport } from '../document-imports/document-import.service.js';
 import type { assignmentSchema, changeStatusSchema, commentSchema, createSacRecordSchema, dueDateChangeSchema, historyQuerySchema, listSacRecordsSchema, priorityChangeSchema, takeCaseSchema, updateSacRecordSchema } from './sac.schema.js';
 
 type ListInput = z.infer<typeof listSacRecordsSchema>;
@@ -206,7 +207,7 @@ export async function createSacRecord(input: CreateInput, actorId: string, idemp
   const existing = await prisma.sacRecord.findUnique({ where: { idempotencyKey }, include: recordInclude });
   if (existing) return { record: { ...existing, operational: classifyOperationalAttention(existing) }, created: false };
   try {
-    return await prisma.$transaction(async tx => {
+    const result = await prisma.$transaction(async tx => {
       const replay = await tx.sacRecord.findUnique({ where: { idempotencyKey }, include: recordInclude });
       if (replay) return { record: { ...replay, operational: classifyOperationalAttention(replay) }, created: false };
       const { reason, channel, assignee } = await validateReferences(tx, input);
@@ -237,11 +238,29 @@ export async function createSacRecord(input: CreateInput, actorId: string, idemp
           },
         },
       });
-      await tx.activityLog.create({ data: { recordId: created.id, actorId, eventType: 'CREATED', summary: `Registro ${ticket} criado. Responsável: ${assignee?.name ?? 'Sem responsável'}. Status inicial: PENDING.`, createdAt: activityAt } });
+      await tx.activityLog.create({
+        data: {
+          recordId: created.id,
+          actorId,
+          eventType: 'CREATED',
+          summary: `Registro ${ticket} criado.${input.importSessionId ? ' Criado a partir de formulário importado.' : ''} Responsável: ${assignee?.name ?? 'Sem responsável'}. Status inicial: PENDING.`,
+          createdAt: activityAt,
+        },
+      });
       await createCaseNotification(tx, { recipientId: input.assigneeId, actorId, recordId: created.id, ticket, type: 'ASSIGNED', title: 'Caso atribuído a você', summary: `${ticket} foi atribuído à sua responsabilidade.`, metadata: { ticket } });
       const record = await tx.sacRecord.findUniqueOrThrow({ where: { id: created.id }, include: recordInclude });
       return { record: { ...record, operational: classifyOperationalAttention(record) }, created: true };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+
+    if (result.created && input.importSessionId) {
+      await confirmDocumentImport(input.importSessionId, result.record.id, Boolean(input.preserveImportAsAttachment), actorId);
+      const reloaded = await prisma.sacRecord.findUnique({ where: { id: result.record.id }, include: recordInclude });
+      if (reloaded) {
+        return { record: { ...reloaded, operational: classifyOperationalAttention(reloaded) }, created: true };
+      }
+    }
+
+    return result;
   } catch (error) {
     if (errorCode(error) === 'P2002') {
       const replay = await prisma.sacRecord.findUnique({ where: { idempotencyKey }, include: recordInclude });

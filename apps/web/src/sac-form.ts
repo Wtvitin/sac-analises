@@ -52,7 +52,13 @@ export function validateAttachments(files: Array<Pick<File, 'name' | 'size' | 't
   return '';
 }
 
-export function sacFormPayload(form: SacFormValues, allowDuplicateExternalTicket: boolean, updatedAt?: string) {
+export function sacFormPayload(
+  form: SacFormValues,
+  allowDuplicateExternalTicket: boolean,
+  updatedAt?: string,
+  importSessionId?: string | null,
+  preserveImportAsAttachment?: boolean
+) {
   return {
     customerName: form.customerName, orderNumber: form.orderNumber, externalTicket: form.externalTicket,
     channelId: form.channelId, openedAt: new Date(form.openedAt).toISOString(), reasonId: form.reasonId,
@@ -62,6 +68,7 @@ export function sacFormPayload(form: SacFormValues, allowDuplicateExternalTicket
     responsibleArea: form.responsibleArea, correctiveAction: form.correctiveAction,
     items: form.items.map(({ key: _key, ...item }) => ({ ...item, quantity: Number(item.quantity) })),
     allowDuplicateExternalTicket, ...(updatedAt ? { updatedAt } : {}),
+    ...(importSessionId ? { importSessionId, preserveImportAsAttachment: preserveImportAsAttachment ?? true } : {}),
   };
 }
 
