@@ -133,30 +133,39 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const res = await apiRequest<{ data: any }>('/document-imports', {
+      const res = await apiRequest<any>('/document-imports', {
         method: 'POST',
         body: formData,
       });
-      const session = res.data;
+
+      // apiRequest unwraps body.data, but handle both { data: session } and session directly
+      const session = (res && typeof res === 'object' && 'data' in res && (res as any).data)
+        ? (res as any).data
+        : res;
+
+      if (!session || typeof session !== 'object' || typeof session.status !== 'string') {
+        throw new Error('Não foi possível obter a sessão de importação do servidor.');
+      }
+
       if (session.status === 'READY_FOR_REVIEW' && session.extractedData) {
         setImportSessionId(session.id);
-        setImportedFile({ name: session.originalName, format: session.format });
+        setImportedFile({ name: session.originalName || file.name, format: session.format || 'DOCUMENT' });
         setExtractedData(session.extractedData);
 
-        const ext = session.extractedData;
+        const ext = session.extractedData || {};
         setForm(current => {
           let matchedChannelId = current.channelId;
           const chanCand = ext.channelId?.value || ext.channelName?.value || ext.channel?.value;
-          if (chanCand) {
+          if (chanCand && channels && channels.length > 0) {
             const rawChan = String(chanCand).toLowerCase().trim();
-            const matched = channels.find(c => c.name.toLowerCase().includes(rawChan) || rawChan.includes(c.name.toLowerCase()));
+            const matched = channels.find(c => c && c.name && (c.name.toLowerCase().includes(rawChan) || rawChan.includes(c.name.toLowerCase())));
             if (matched) matchedChannelId = matched.id;
           }
 
           let matchedReasonId = current.reasonId;
-          if (ext.suggestedReason?.value) {
+          if (ext.suggestedReason?.value && reasons && reasons.length > 0) {
             const rawReason = String(ext.suggestedReason.value).toLowerCase().trim();
-            const matchedR = reasons.find(r => r.id === ext.suggestedReason.value || r.name.toLowerCase().includes(rawReason) || rawReason.includes(r.name.toLowerCase()));
+            const matchedR = reasons.find(r => r && (r.id === ext.suggestedReason.value || (r.name && (r.name.toLowerCase().includes(rawReason) || rawReason.includes(r.name.toLowerCase())))));
             if (matchedR) matchedReasonId = matchedR.id;
           }
 
@@ -168,14 +177,14 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
             }
           }
 
-          const newItems = (ext.items && ext.items.length > 0)
+          const newItems = (Array.isArray(ext.items) && ext.items.length > 0)
             ? ext.items.map((it: any) => ({
                 key: crypto.randomUUID(),
-                code: String(it.code || ''),
-                description: String(it.description || ''),
-                batch: String(it.batch || ''),
-                quantity: String(it.quantity || 1),
-                note: '',
+                code: String(it?.code || ''),
+                description: String(it?.description || ''),
+                batch: String(it?.batch || ''),
+                quantity: String(it?.quantity || 1),
+                note: String(it?.note || ''),
               }))
             : current.items;
 
@@ -192,16 +201,24 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
           };
         });
 
-        if (ext.candidateDuplicateCases && ext.candidateDuplicateCases.length > 0) {
+        if (Array.isArray(ext.candidateDuplicateCases) && ext.candidateDuplicateCases.length > 0) {
           setDuplicateExternal(true);
         }
 
         setEntryMode('manual');
       } else if (session.status === 'FAILED') {
         setImportError(session.error || 'Falha ao interpretar o formulário.');
+      } else {
+        setImportError('Status de importação inesperado. Revise o documento manualmente.');
       }
     } catch (err: any) {
-      setImportError(err instanceof Error ? err.message : 'Não foi possível ler o documento.');
+      const message = err instanceof Error ? err.message : 'Não foi possível ler o documento.';
+      // Ensure technical errors like "Cannot read properties" never leak raw to user
+      if (message.includes('Cannot read') || message.includes('undefined') || message.includes('null')) {
+        setImportError('Falha ao processar o formulário. Revise o preenchimento ou preencha manualmente.');
+      } else {
+        setImportError(message);
+      }
     } finally {
       setImporting(false);
     }

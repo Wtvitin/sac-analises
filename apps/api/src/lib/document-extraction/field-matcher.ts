@@ -161,46 +161,62 @@ export async function matchAndScoreFields(
     }
   }
 
-  // Ensure confidenceLevel is populated for all returned candidate fields
-  const ensureConfidenceLevel = (field?: CandidateField): CandidateField | undefined => {
+  // Helper to ensure CandidateField is always safe and populated
+  const createEmptyCandidate = (sourceSnippet = '', warning?: string): CandidateField => ({
+    value: '',
+    sourceSnippet,
+    confidence: 'UNIDENTIFIED',
+    confidenceLevel: 'LOW',
+    warning,
+    requiresReview: false,
+  });
+
+  const ensureCandidateField = (field?: CandidateField): CandidateField => {
+    if (!field) return createEmptyCandidate();
+    return {
+      ...field,
+      confidence: field.confidence || 'UNIDENTIFIED',
+      confidenceLevel:
+        field.confidenceLevel ||
+        (field.confidence === 'IDENTIFIED' ? 'HIGH' : field.confidence === 'REVIEW_REQUIRED' ? 'MEDIUM' : 'LOW'),
+    };
+  };
+
+  const ensureOptionalCandidate = (field?: CandidateField): CandidateField | undefined => {
     if (!field) return undefined;
-    if (!field.confidenceLevel) {
-      field.confidenceLevel =
-        field.confidence === 'IDENTIFIED' ? 'HIGH' : field.confidence === 'REVIEW_REQUIRED' ? 'MEDIUM' : 'LOW';
-    }
-    return field;
+    return ensureCandidateField(field);
   };
 
   return {
     format,
     isScannedPdf,
-    modelId: interpreted.modelId || 'KEY_VALUE_FORM',
-    modelName: interpreted.modelName || 'Formulário Padrão',
-    externalTicket: ensureConfidenceLevel(interpreted.externalTicket)!,
-    customerName: ensureConfidenceLevel(interpreted.customerName)!,
-    customerContact: ensureConfidenceLevel(interpreted.customerContact),
-    customerAddress: ensureConfidenceLevel(interpreted.customerAddress),
-    openedAt: ensureConfidenceLevel(interpreted.openedAt)!,
-    channelName: ensureConfidenceLevel(interpreted.channelName),
-    channelId: ensureConfidenceLevel(channelId),
-    orderNumber: ensureConfidenceLevel(interpreted.orderNumber)!,
-    description: ensureConfidenceLevel(interpreted.description)!,
-    internalNote: ensureConfidenceLevel(interpreted.internalNote),
-    suggestedReason: ensureConfidenceLevel(suggestedReason),
-    suggestedSubreason: ensureConfidenceLevel(suggestedSubreason),
-    invoiceNumber: ensureConfidenceLevel(interpreted.invoiceNumber),
-    items: interpreted.items.map(it => ({
+    modelId: interpreted?.modelId || 'KEY_VALUE_FORM',
+    modelName: interpreted?.modelName || 'Formulário Padrão',
+    externalTicket: ensureCandidateField(interpreted?.externalTicket),
+    customerName: ensureCandidateField(interpreted?.customerName),
+    customerContact: ensureOptionalCandidate(interpreted?.customerContact),
+    customerAddress: ensureOptionalCandidate(interpreted?.customerAddress),
+    openedAt: ensureCandidateField(interpreted?.openedAt),
+    channelName: ensureOptionalCandidate(interpreted?.channelName),
+    channelId: ensureOptionalCandidate(channelId),
+    orderNumber: ensureCandidateField(interpreted?.orderNumber),
+    description: ensureCandidateField(interpreted?.description),
+    internalNote: ensureOptionalCandidate(interpreted?.internalNote),
+    suggestedReason: ensureOptionalCandidate(suggestedReason),
+    suggestedSubreason: ensureOptionalCandidate(suggestedSubreason),
+    invoiceNumber: ensureOptionalCandidate(interpreted?.invoiceNumber),
+    items: (interpreted?.items || []).map(it => ({
       ...it,
-      confidenceLevel: it.confidenceLevel || (it.confidence === 'IDENTIFIED' ? 'HIGH' : 'MEDIUM'),
+      confidenceLevel: it?.confidenceLevel || (it?.confidence === 'IDENTIFIED' ? 'HIGH' : 'MEDIUM'),
     })),
-    additionalInfo: interpreted.additionalInfo,
-    referencedFiles: interpreted.referencedFiles,
+    additionalInfo: interpreted?.additionalInfo || [],
+    referencedFiles: interpreted?.referencedFiles || [],
     summary: {
       totalIdentified,
       totalReviewRequired,
       totalUnidentified,
     },
-    warnings: interpreted.warnings,
+    warnings: interpreted?.warnings || [],
     existingCustomer,
     potentialDuplicate,
   };

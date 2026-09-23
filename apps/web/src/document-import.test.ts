@@ -146,4 +146,80 @@ describe('Document Import Client Form and Payload', () => {
       expect(extractedOrder.candidateOrderNumbers).toContain('991280');
     });
   });
+
+  describe('Session Unwrapping and Catalog Resilience (Regression)', () => {
+    it('safely unwraps session whether apiRequest returns body.data or raw session', () => {
+      const mockSession = {
+        id: 'session-123',
+        status: 'READY_FOR_REVIEW',
+        originalName: 'teste.pdf',
+        format: 'PDF',
+        extractedData: {
+          customerName: { value: 'Dr. Teste', confidence: 'IDENTIFIED', confidenceLevel: 'HIGH' },
+          orderNumber: { value: '', confidence: 'UNIDENTIFIED', confidenceLevel: 'LOW' },
+          items: [],
+        },
+      };
+
+      // Case 1: apiRequest returns the session directly (body.data)
+      const resDirect = mockSession;
+      const sessionDirect = (resDirect && typeof resDirect === 'object' && 'data' in resDirect && (resDirect as any).data)
+        ? (resDirect as any).data
+        : resDirect;
+      expect(sessionDirect?.status).toBe('READY_FOR_REVIEW');
+
+      // Case 2: apiRequest returns wrapped { data: session }
+      const resWrapped = { data: mockSession };
+      const sessionWrapped = (resWrapped && typeof resWrapped === 'object' && 'data' in resWrapped && (resWrapped as any).data)
+        ? (resWrapped as any).data
+        : resWrapped;
+      expect(sessionWrapped?.status).toBe('READY_FOR_REVIEW');
+    });
+
+    it('gracefully handles missing or unmatched catalog options without throwing', () => {
+      const emptyChannels: Array<{ id: string; name: string }> = [];
+      const emptyReasons: Array<{ id: string; name: string }> = [];
+
+      const ext = {
+        suggestedReason: { value: 'Motivo Inexistente' },
+        channel: { value: 'Canal Inexistente' },
+        channelName: { value: 'Canal Inexistente' },
+        items: [{ code: 'COD-1', description: 'Desc', batch: 'B1', quantity: 2 }],
+      };
+
+      let matchedChannelId = '';
+      const chanCand = ext.channelName?.value || ext.channel?.value;
+      if (chanCand && emptyChannels.length > 0) {
+        const rawChan = String(chanCand).toLowerCase().trim();
+        const matched = emptyChannels.find(c => c && c.name && (c.name.toLowerCase().includes(rawChan) || rawChan.includes(c.name.toLowerCase())));
+        if (matched) matchedChannelId = matched.id;
+      }
+
+      let matchedReasonId = '';
+      if (ext.suggestedReason?.value && emptyReasons.length > 0) {
+        const rawReason = String(ext.suggestedReason.value).toLowerCase().trim();
+        const matchedR = emptyReasons.find(r => r && (r.id === ext.suggestedReason.value || (r.name && (r.name.toLowerCase().includes(rawReason) || rawReason.includes(r.name.toLowerCase())))));
+        if (matchedR) matchedReasonId = matchedR.id;
+      }
+
+      expect(matchedChannelId).toBe('');
+      expect(matchedReasonId).toBe('');
+    });
+
+    it('sanitizes internal runtime error messages so users never see undefined status errors', () => {
+      const sanitize = (err: unknown): string => {
+        const message = err instanceof Error ? err.message : 'Não foi possível ler o documento.';
+        if (message.includes('Cannot read') || message.includes('undefined') || message.includes('null')) {
+          return 'Falha ao processar o formulário. Revise o preenchimento ou preencha manualmente.';
+        }
+        return message;
+      };
+
+      const technicalError = new TypeError("Cannot read properties of undefined (reading 'status')");
+      expect(sanitize(technicalError)).toBe('Falha ao processar o formulário. Revise o preenchimento ou preencha manualmente.');
+
+      const normalError = new Error('O formulário deve ter no máximo 10 MB.');
+      expect(sanitize(normalError)).toBe('O formulário deve ter no máximo 10 MB.');
+    });
+  });
 });

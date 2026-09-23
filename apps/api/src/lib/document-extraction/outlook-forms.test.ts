@@ -240,4 +240,41 @@ describe('Outlook / Microsoft Forms Parser (Etapa 11.2)', () => {
     expect(interpreted.orderNumber.value).toBe('');
     expect(interpreted.externalTicket.value).toBe('');
   });
+
+  it('handles completely empty or unmatched fields without any exceptions or undefined properties', async () => {
+    const emptyDocumentText = '';
+    const interpreted = interpretDocumentText(emptyDocumentText);
+
+    const emptyCatalog = {
+      reasons: [],
+      channels: [],
+    };
+
+    const matched = await matchAndScoreFields(interpreted, 'PDF', false, emptyCatalog);
+
+    expect(matched).toBeDefined();
+    expect(matched.customerName).toBeDefined();
+    expect(matched.customerName.value).toBe('');
+    expect(matched.customerName.confidence).toBe('UNIDENTIFIED');
+    expect(matched.customerName.confidenceLevel).toBe('LOW');
+
+    expect(matched.orderNumber).toBeDefined();
+    expect(matched.orderNumber.value).toBe('');
+
+    expect(matched.externalTicket).toBeDefined();
+    expect(matched.externalTicket.value).toBe('');
+
+    expect(matched.description).toBeDefined();
+    expect(matched.description.value).toBe('');
+
+    expect(matched.openedAt).toBeDefined();
+
+    expect(matched.items).toEqual([]);
+    expect(matched.additionalInfo).toEqual([]);
+    expect(matched.referencedFiles).toEqual([]);
+
+    expect(matched.summary.totalIdentified).toBeGreaterThanOrEqual(0);
+    expect(matched.summary.totalReviewRequired).toBeGreaterThanOrEqual(0);
+    expect(matched.summary.totalUnidentified).toBeGreaterThanOrEqual(0);
+  });
 });

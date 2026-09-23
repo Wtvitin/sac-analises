@@ -24,7 +24,8 @@ app.use(cors({ origin(origin, callback) { if (!origin || origin === security.web
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false, limit: '64kb' }));
 app.use((req, res, next) => {
-  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) && req.headers['content-length'] !== '0' && !req.is(['application/json', 'application/*+json', 'multipart/form-data', 'application/x-www-form-urlencoded'])) {
+  const hasBody = req.headers['transfer-encoding'] !== undefined || (req.headers['content-length'] !== undefined && req.headers['content-length'] !== '0');
+  if (hasBody && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) && !req.is(['application/json', 'application/*+json', 'multipart/form-data', 'application/x-www-form-urlencoded'])) {
     return res.status(415).json({ error: { code: 'UNSUPPORTED_CONTENT_TYPE', message: 'Tipo de conteúdo não suportado.' } });
   }
   return next();
