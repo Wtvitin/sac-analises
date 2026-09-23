@@ -1,6 +1,15 @@
-import type { CandidateField, ExtractedItem, RawDocumentText } from './document-extraction.types.js';
+import type {
+  AdditionalFieldInfo,
+  CandidateField,
+  ExtractedItem,
+  RawDocumentText,
+  ReferencedDocumentFile,
+} from './document-extraction.types.js';
+import { isOutlookFormsDocument, parseOutlookFormsDocument } from './outlook-forms.parser.js';
 
 export interface InterpretedForm {
+  modelId?: 'OUTLOOK_MS_FORMS' | 'KEY_VALUE_FORM' | 'GENERIC_TEXT';
+  modelName?: string;
   externalTicket: CandidateField;
   customerName: CandidateField;
   customerContact?: CandidateField;
@@ -11,7 +20,12 @@ export interface InterpretedForm {
   description: CandidateField;
   internalNote?: CandidateField;
   suggestedAssignee?: CandidateField;
+  invoiceNumber?: CandidateField;
   items: ExtractedItem[];
+  additionalInfo?: AdditionalFieldInfo[];
+  referencedFiles?: ReferencedDocumentFile[];
+  occurrenceReasonText?: string;
+  subjectText?: string;
   rawFields: Record<string, string>;
   warnings: string[];
 }
@@ -73,6 +87,7 @@ function detectOrderNumbers(text: string, externalTicket?: string): { numbers: s
   const snippets: string[] = [];
 
   // Patterns for order references: "pedido 12345", "pv: 9876", "nº pedido 5544"
+  // Exclude "nota fiscal" numbers
   const regex = /\b(?:pedido|pv|ped\.?|n[ºo°]?\s*pedido)\s*[:#\s]?\s*([0-9]{3,12})\b/gi;
   let match: RegExpExecArray | null;
 
@@ -88,37 +103,56 @@ function detectOrderNumbers(text: string, externalTicket?: string): { numbers: s
   return { numbers: matches, snippets };
 }
 
-export function interpretDocumentText(raw: RawDocumentText): InterpretedForm {
-  const text = raw.text;
-  const warnings = [...raw.warnings];
+export function interpretDocumentText(raw: RawDocumentText | string): InterpretedForm {
+  const normalizedRaw: RawDocumentText = typeof raw === 'string'
+    ? { text: raw, format: 'PDF', numPages: 1, isScanned: false, warnings: [] }
+    : {
+        text: raw.text || '',
+        format: raw.format || 'PDF',
+        numPages: raw.numPages || 1,
+        warnings: Array.isArray(raw.warnings) ? raw.warnings : [],
+        tableData: raw.tableData,
+        isScanned: Boolean(raw.isScanned),
+      };
+
+  // If document matches Outlook / Microsoft Forms structure, use the dedicated parser
+  if (isOutlookFormsDocument(normalizedRaw.text)) {
+    return parseOutlookFormsDocument(normalizedRaw);
+  }
+
+  const text = normalizedRaw.text;
+  const warnings = [...normalizedRaw.warnings];
   const rawFields: Record<string, string> = {};
 
-  // 1. External Ticket / Atendimento
+  // 1. External Ticket / Atendimento (require explicit colon or # to prevent matching generic text like "Atendimento Ao")
   const ticketFound = extractLabelValue(text, [
-    /\b(?:atendimento|protocolo|n[ºo°]?\s*atendimento)\s*[:#\s]?\s*([A-Za-z0-9\-_/]+)/i,
-    /\b(?:ticket|chamado)\s*[:#\s]?\s*([A-Za-z0-9\-_/]+)/i,
+    /\b(?:atendimento|protocolo|n[ºo°]?\s*atendimento)\s*[:#]\s*([A-Za-z0-9\-_/]+)/i,
+    /\b(?:ticket|chamado)\s*[:#]\s*([A-Za-z0-9\-_/]+)/i,
   ]);
   const externalTicket: CandidateField = ticketFound
     ? {
         value: ticketFound.value,
         sourceSnippet: ticketFound.snippet,
         confidence: 'IDENTIFIED',
+        confidenceLevel: 'HIGH',
         requiresReview: false,
       }
-    : { value: '', confidence: 'UNIDENTIFIED', requiresReview: false };
+    : { value: '', confidence: 'UNIDENTIFIED', confidenceLevel: 'LOW', requiresReview: false };
 
   // 2. Cliente
   const clientFound = extractLabelValue(text, [
-    /\b(?:cliente|nome\s+do\s+cliente|raz[ãa]o\s+social)\s*[:#\s]?\s*([^\r\n;]+)/i,
+    /\b(?:cliente|nome\s+do\s+cliente|nome\s+completo|nome|raz[ãa]o\s+social)\s*[:#]\s*([^\r\n;]+)/i,
+    /\b(?:cliente)\s*[:#\s]\s*([^\r\n;]+)/i,
   ]);
   const customerName: CandidateField = clientFound
     ? {
         value: clientFound.value.replace(/^(sr|sra|dr|dra)\.?\s+/i, ''),
         sourceSnippet: clientFound.snippet,
         confidence: 'IDENTIFIED',
+        confidenceLevel: 'HIGH',
         requiresReview: false,
       }
-    : { value: '', confidence: 'UNIDENTIFIED', requiresReview: true };
+    : { value: '', confidence: 'UNIDENTIFIED', confidenceLevel: 'LOW', requiresReview: true };
 
   // 3. Contato e Endereço
   const contactFound = extractLabelValue(text, [/\b(?:contato|respons[áa]vel)\s*[:#\s]?\s*([^\r\n;]+)/i]);
@@ -262,8 +296,8 @@ export function interpretDocumentText(raw: RawDocumentText): InterpretedForm {
   const items: ExtractedItem[] = [];
 
   // Check structured tableData if provided (e.g. from XLSX)
-  if (raw.tableData && raw.tableData.length > 0) {
-    raw.tableData.forEach((row, idx) => {
+  if (normalizedRaw.tableData && normalizedRaw.tableData.length > 0) {
+    normalizedRaw.tableData.forEach((row: Record<string, string>, idx: number) => {
       const codeKey = Object.keys(row).find(k => /c[óo]digo|sku|item|cod/i.test(k));
       const descKey = Object.keys(row).find(k => /descri|produto|nome/i.test(k));
       const batchKey = Object.keys(row).find(k => /lote|batch/i.test(k));
@@ -315,6 +349,8 @@ export function interpretDocumentText(raw: RawDocumentText): InterpretedForm {
   }
 
   return {
+    modelId: 'KEY_VALUE_FORM',
+    modelName: 'Formulário Chave-Valor',
     externalTicket,
     customerName,
     customerContact,

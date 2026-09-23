@@ -6,7 +6,11 @@ import type { InterpretedForm } from './form-interpreter.js';
 export async function matchAndScoreFields(
   interpreted: InterpretedForm,
   format: 'PDF' | 'IMAGE' | 'XLSX',
-  isScannedPdf = false
+  isScannedPdf = false,
+  catalogOverride?: {
+    reasons?: Array<{ id: string; name: string; normalizedName?: string }>;
+    channels?: Array<{ id: string; name: string; normalizedName?: string }>;
+  }
 ): Promise<FormExtractionResult> {
   let existingCustomer: { id: string; name: string } | null = null;
 
@@ -30,10 +34,12 @@ export async function matchAndScoreFields(
   let channelId: CandidateField | undefined;
   if (interpreted.channelName?.value) {
     try {
-      const activeChannels = await prisma.channel.findMany({
-        where: { active: true },
-        select: { id: true, name: true, normalizedName: true },
-      });
+      const activeChannels = catalogOverride?.channels
+        ? catalogOverride.channels.map(c => ({ ...c, normalizedName: c.normalizedName || normalizeCatalogName(c.name) }))
+        : await prisma.channel.findMany({
+            where: { active: true },
+            select: { id: true, name: true, normalizedName: true },
+          });
       const normInput = normalizeCatalogName(interpreted.channelName.value);
       const matched = activeChannels.find(c =>
         c.normalizedName === normInput ||
@@ -46,12 +52,14 @@ export async function matchAndScoreFields(
           value: matched.id,
           sourceSnippet: `Correspondente ao canal cadastrado "${matched.name}"`,
           confidence: 'IDENTIFIED',
+          confidenceLevel: 'HIGH',
           requiresReview: false,
         };
       } else {
         channelId = {
           value: '',
           confidence: 'REVIEW_REQUIRED',
+          confidenceLevel: 'MEDIUM',
           requiresReview: true,
           warning: `Canal "${interpreted.channelName.value}" não encontrado no cadastro ativo. Selecione manualmente.`,
         };
@@ -61,7 +69,39 @@ export async function matchAndScoreFields(
     }
   }
 
-  // 3. Potential duplicate check
+  // 3. Reason lookup and suggestion (e.g. from "Qual foi o ocorrido?")
+  let suggestedReason: CandidateField | undefined;
+  let suggestedSubreason: CandidateField | undefined;
+  if (interpreted.occurrenceReasonText) {
+    try {
+      const activeReasons = catalogOverride?.reasons
+        ? catalogOverride.reasons.map(r => ({ ...r, normalizedName: r.normalizedName || normalizeCatalogName(r.name) }))
+        : await prisma.reason.findMany({
+            where: { active: true },
+            select: { id: true, name: true, normalizedName: true },
+          });
+      const normReasonInput = normalizeCatalogName(interpreted.occurrenceReasonText);
+      const matchedReason = activeReasons.find(r =>
+        r.normalizedName === normReasonInput ||
+        normReasonInput.includes(r.normalizedName) ||
+        r.normalizedName.includes(normReasonInput)
+      );
+
+      if (matchedReason) {
+        suggestedReason = {
+          value: matchedReason.id,
+          sourceSnippet: `Correspondente ao motivo cadastrado "${matchedReason.name}" ("${interpreted.occurrenceReasonText}")`,
+          confidence: 'IDENTIFIED',
+          confidenceLevel: 'HIGH',
+          requiresReview: false,
+        };
+      }
+    } catch {
+      // Non-blocking
+    }
+  }
+
+  // 4. Potential duplicate check
   let potentialDuplicate: { found: boolean; ticket?: string; reason?: string } | null = null;
 
   try {
@@ -96,7 +136,7 @@ export async function matchAndScoreFields(
     // Non-blocking
   }
 
-  // 4. Calculate confidence summary
+  // 5. Calculate confidence summary
   const fieldsToCheck: Array<CandidateField | undefined> = [
     interpreted.customerName,
     interpreted.orderNumber,
@@ -104,6 +144,7 @@ export async function matchAndScoreFields(
     interpreted.openedAt,
     interpreted.description,
     channelId,
+    suggestedReason,
   ];
 
   let totalIdentified = 0;
@@ -120,20 +161,40 @@ export async function matchAndScoreFields(
     }
   }
 
+  // Ensure confidenceLevel is populated for all returned candidate fields
+  const ensureConfidenceLevel = (field?: CandidateField): CandidateField | undefined => {
+    if (!field) return undefined;
+    if (!field.confidenceLevel) {
+      field.confidenceLevel =
+        field.confidence === 'IDENTIFIED' ? 'HIGH' : field.confidence === 'REVIEW_REQUIRED' ? 'MEDIUM' : 'LOW';
+    }
+    return field;
+  };
+
   return {
     format,
     isScannedPdf,
-    externalTicket: interpreted.externalTicket,
-    customerName: interpreted.customerName,
-    customerContact: interpreted.customerContact,
-    customerAddress: interpreted.customerAddress,
-    openedAt: interpreted.openedAt,
-    channelName: interpreted.channelName,
-    channelId,
-    orderNumber: interpreted.orderNumber,
-    description: interpreted.description,
-    internalNote: interpreted.internalNote,
-    items: interpreted.items,
+    modelId: interpreted.modelId || 'KEY_VALUE_FORM',
+    modelName: interpreted.modelName || 'Formulário Padrão',
+    externalTicket: ensureConfidenceLevel(interpreted.externalTicket)!,
+    customerName: ensureConfidenceLevel(interpreted.customerName)!,
+    customerContact: ensureConfidenceLevel(interpreted.customerContact),
+    customerAddress: ensureConfidenceLevel(interpreted.customerAddress),
+    openedAt: ensureConfidenceLevel(interpreted.openedAt)!,
+    channelName: ensureConfidenceLevel(interpreted.channelName),
+    channelId: ensureConfidenceLevel(channelId),
+    orderNumber: ensureConfidenceLevel(interpreted.orderNumber)!,
+    description: ensureConfidenceLevel(interpreted.description)!,
+    internalNote: ensureConfidenceLevel(interpreted.internalNote),
+    suggestedReason: ensureConfidenceLevel(suggestedReason),
+    suggestedSubreason: ensureConfidenceLevel(suggestedSubreason),
+    invoiceNumber: ensureConfidenceLevel(interpreted.invoiceNumber),
+    items: interpreted.items.map(it => ({
+      ...it,
+      confidenceLevel: it.confidenceLevel || (it.confidence === 'IDENTIFIED' ? 'HIGH' : 'MEDIUM'),
+    })),
+    additionalInfo: interpreted.additionalInfo,
+    referencedFiles: interpreted.referencedFiles,
     summary: {
       totalIdentified,
       totalReviewRequired,

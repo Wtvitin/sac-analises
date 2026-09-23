@@ -6,3 +6,4 @@ export * from './image-ocr.parser.js';
 export * from './form-interpreter.js';
 export * from './field-matcher.js';
 export * from './ooxml-validator.js';
+export * from './outlook-forms.parser.js';

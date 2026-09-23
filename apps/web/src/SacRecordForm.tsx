@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import {
-  AlertCircle, AlertTriangle, Check, FileCheck, FileText, LoaderCircle,
+  AlertCircle, AlertTriangle, Check, Copy, FileCheck, FileText, HelpCircle, Info, LoaderCircle,
   PackagePlus, Paperclip, PenTool, Plus, Trash2, UploadCloud, X,
 } from 'lucide-react';
 import { apiRequest } from './api';
@@ -24,31 +24,42 @@ export type DetailedRecord = {
   operational: OperationalIndicators;
 };
 
-function ConfidenceTag({ field }: { field?: { confidence?: string; sourceSnippet?: string; note?: string } | null }) {
+function ConfidenceTag({ field }: { field?: { confidence?: string; confidenceLevel?: string; sourceSnippet?: string; warning?: string; note?: string } | null }) {
   if (!field || !field.confidence) return null;
-  if (field.confidence === 'IDENTIFIED') {
+  const isHigh = field.confidenceLevel === 'HIGH' || field.confidence === 'IDENTIFIED';
+  const isMedium = field.confidenceLevel === 'MEDIUM' || field.confidence === 'REVIEW_REQUIRED';
+
+  if (isHigh) {
     return (
-      <span className="sac-confidence-badge sac-confidence-badge--identified" title={`Origem: "${field.sourceSnippet}"`}>
-        <Check style={{ width: 12, height: 12 }} /> Identificado
+      <span className="sac-confidence-badge sac-confidence-badge--identified" title={`Confiança Alta. Origem: "${field.sourceSnippet || ''}"`}>
+        <Check style={{ width: 12, height: 12 }} /> Alta
       </span>
     );
   }
-  if (field.confidence === 'REVIEW_REQUIRED') {
+  if (isMedium) {
     return (
-      <span className="sac-confidence-badge sac-confidence-badge--review" title={field.note || `Origem: "${field.sourceSnippet}"`}>
-        <AlertCircle style={{ width: 12, height: 12 }} /> Revisar
+      <span className="sac-confidence-badge sac-confidence-badge--review" title={field.warning || field.note || `Revisão recomendada. Origem: "${field.sourceSnippet || ''}"`}>
+        <AlertCircle style={{ width: 12, height: 12 }} /> Média
       </span>
     );
   }
-  return null;
+  return (
+    <span className="sac-confidence-badge sac-confidence-badge--unknown" title={field.warning || 'Campo não localizado no documento.'}>
+      <HelpCircle style={{ width: 12, height: 12 }} /> Baixa
+    </span>
+  );
 }
 
-function SnippetHint({ field }: { field?: { sourceSnippet?: string; note?: string } | null }) {
-  if (!field || (!field.sourceSnippet && !field.note)) return null;
+function SnippetHint({ field }: { field?: { sourceSnippet?: string; warning?: string; note?: string } | null }) {
+  if (!field || (!field.sourceSnippet && !field.warning && !field.note)) return null;
   return (
     <>
       {field.sourceSnippet && <span className="sac-field-snippet" title={field.sourceSnippet}>Origem: &ldquo;{field.sourceSnippet}&rdquo;</span>}
-      {field.note && <span className="sac-field-snippet" style={{ color: 'var(--color-warning)' }}>{field.note}</span>}
+      {(field.warning || field.note) && (
+        <span className="sac-field-snippet" style={{ color: 'var(--color-warning)' }}>
+          {field.warning || field.note}
+        </span>
+      )}
     </>
   );
 }
@@ -106,6 +117,16 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
     setEntryMode('manual');
   };
 
+  const handleCopyAdditionalInfoToNote = () => {
+    if (!extractedData?.additionalInfo || extractedData.additionalInfo.length === 0) return;
+    const lines = extractedData.additionalInfo.map((info: any) => `${info.label}: ${info.value}`);
+    const textToAppend = `[Informações extraídas do documento]\n${lines.join('\n')}`;
+    setForm(curr => ({
+      ...curr,
+      internalNote: curr.internalNote ? `${curr.internalNote}\n\n${textToAppend}` : textToAppend,
+    }));
+  };
+
   const handleImportFile = async (file: File) => {
     setImporting(true);
     setImportError(null);
@@ -125,10 +146,18 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
         const ext = session.extractedData;
         setForm(current => {
           let matchedChannelId = current.channelId;
-          if (ext.channel?.value) {
-            const rawChan = String(ext.channel.value).toLowerCase().trim();
+          const chanCand = ext.channelId?.value || ext.channelName?.value || ext.channel?.value;
+          if (chanCand) {
+            const rawChan = String(chanCand).toLowerCase().trim();
             const matched = channels.find(c => c.name.toLowerCase().includes(rawChan) || rawChan.includes(c.name.toLowerCase()));
             if (matched) matchedChannelId = matched.id;
+          }
+
+          let matchedReasonId = current.reasonId;
+          if (ext.suggestedReason?.value) {
+            const rawReason = String(ext.suggestedReason.value).toLowerCase().trim();
+            const matchedR = reasons.find(r => r.id === ext.suggestedReason.value || r.name.toLowerCase().includes(rawReason) || rawReason.includes(r.name.toLowerCase()));
+            if (matchedR) matchedReasonId = matchedR.id;
           }
 
           let formattedOpenedAt = current.openedAt;
@@ -157,6 +186,7 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
             externalTicket: ext.externalTicket?.value || current.externalTicket,
             description: ext.description?.value || current.description,
             channelId: matchedChannelId,
+            reasonId: matchedReasonId,
             openedAt: formattedOpenedAt,
             items: newItems,
           };
@@ -331,6 +361,9 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
                   <strong>
                     {importedFile.name}
                     <span className="sac-format-badge">{importedFile.format}</span>
+                    {extractedData?.modelName && (
+                      <span className="sac-model-badge">{extractedData.modelName}</span>
+                    )}
                   </strong>
                   <small>
                     Dados extraídos automaticamente do formulário. Revise os campos antes de confirmar.
@@ -340,6 +373,68 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
               <button type="button" className="sac-import-discard-btn" onClick={handleDiscardImport} disabled={saving}>
                 Descartar importação
               </button>
+            </div>
+          )}
+
+          {extractedData?.referencedFiles && extractedData.referencedFiles.length > 0 && (
+            <div className="sac-referenced-files-alert" role="status">
+              <div className="sac-referenced-files-header">
+                <Paperclip style={{ width: 16, height: 16 }} />
+                <span>Arquivos citados no formulário (não anexados automaticamente):</span>
+              </div>
+              <div>
+                {extractedData.referencedFiles.map((rf: any, idx: number) => (
+                  <div key={idx} className="sac-referenced-file-item">
+                    <span className="sac-referenced-file-name">{rf.name}</span>
+                    <span className="sac-referenced-file-badge">Apenas referenciado no texto</span>
+                  </div>
+                ))}
+              </div>
+              <small style={{ display: 'block', marginTop: 4, opacity: 0.9 }}>
+                O documento cita estes arquivos como evidência. Se possuir os arquivos originais, anexe-os na seção de Evidências abaixo.
+              </small>
+            </div>
+          )}
+
+          {extractedData?.additionalInfo && extractedData.additionalInfo.length > 0 && (
+            <div className="sac-additional-info-card">
+              <div className="sac-additional-info-header">
+                <div className="sac-additional-info-title">
+                  <Info style={{ width: 16, height: 16, color: 'var(--color-accent)' }} />
+                  <span>Informações adicionais extraídas ({extractedData.additionalInfo.length})</span>
+                </div>
+                <button
+                  type="button"
+                  className="sac-copy-note-btn"
+                  onClick={handleCopyAdditionalInfoToNote}
+                  title="Copiar estas informações para a observação interna"
+                >
+                  <Copy style={{ width: 12, height: 12 }} />
+                  Copiar para observação interna
+                </button>
+              </div>
+              <div className="sac-additional-info-grid">
+                {extractedData.additionalInfo.map((info: any, idx: number) => {
+                  const catClass = info.category === 'FISCAL' ? 'sac-additional-category--fiscal'
+                    : info.category === 'SENSITIVE' ? 'sac-additional-category--sensitive'
+                    : info.category === 'CLINICO' ? 'sac-additional-category--clinico'
+                    : info.category === 'CONTATO' ? 'sac-additional-category--contato'
+                    : 'sac-additional-category--outros';
+                  return (
+                    <div key={idx} className="sac-additional-info-row">
+                      <div className="sac-additional-label-row">
+                        <span className="sac-additional-label">{info.label}</span>
+                        {info.category && (
+                          <span className={`sac-additional-category ${catClass}`}>
+                            {info.category}
+                          </span>
+                        )}
+                      </div>
+                      <span className="sac-additional-value">{info.value}</span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 
@@ -392,6 +487,12 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
               </div>
               <input data-field="orderNumber" value={form.orderNumber} maxLength={40} onChange={event => change('orderNumber', event.target.value)} aria-invalid={Boolean(errors.orderNumber)} />
               <SnippetHint field={extractedData?.orderNumber} />
+              {extractedData?.invoiceNumber?.value && (
+                <div className="sac-invoice-hint" title="Número da Nota Fiscal identificado no documento. Mantido como metadado fiscal sem converter para pedido.">
+                  <Info style={{ width: 12, height: 12 }} />
+                  <span>NF detectada: <strong>{extractedData.invoiceNumber.value}</strong> (metadado fiscal)</span>
+                </div>
+              )}
               {extractedData?.orderNumber?.candidateOrderNumbers && extractedData.orderNumber.candidateOrderNumbers.length > 1 && (
                 <div className="sac-candidates-helper">
                   <span>Outros pedidos detectados:</span>
@@ -443,7 +544,18 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
           </div></fieldset>
 
           <fieldset><legend>2. Classificação da ocorrência</legend><div className="sac-form-grid">
-            <label>Motivo *<select data-field="reasonId" value={form.reasonId} onChange={event => change('reasonId', event.target.value)} aria-invalid={Boolean(errors.reasonId)}><option value="">Selecione</option>{reasons.map(reason => <option value={reason.id} key={reason.id}>{reason.name}</option>)}</select>{errors.reasonId && <small>{errors.reasonId}</small>}</label>
+            <label>
+              <div className="sac-field-header">
+                <span>Motivo *</span>
+                <ConfidenceTag field={extractedData?.suggestedReason} />
+              </div>
+              <select data-field="reasonId" value={form.reasonId} onChange={event => change('reasonId', event.target.value)} aria-invalid={Boolean(errors.reasonId)}>
+                <option value="">Selecione</option>
+                {reasons.map(reason => <option value={reason.id} key={reason.id}>{reason.name}</option>)}
+              </select>
+              <SnippetHint field={extractedData?.suggestedReason} />
+              {errors.reasonId && <small>{errors.reasonId}</small>}
+            </label>
             <label>Submotivo<select value={form.subreasonId} onChange={event => change('subreasonId', event.target.value)} disabled={!form.reasonId}><option value="">Sem submotivo</option>{subreasons.map(subreason => <option value={subreason.id} key={subreason.id}>{subreason.name}</option>)}</select></label>
             <label>Prioridade *<select data-field="priority" value={form.priority} disabled={editing} onChange={event => change('priority', event.target.value as SacFormValues['priority'])} aria-invalid={Boolean(errors.priority)}><option value="">Selecione conscientemente</option><option value="LOW">Baixa</option><option value="MEDIUM">Média</option><option value="HIGH">Alta</option><option value="CRITICAL">Crítica</option></select>{errors.priority && <small>{errors.priority}</small>}{editing && <em>Altere pela ação operacional do caso.</em>}</label>
           </div></fieldset>

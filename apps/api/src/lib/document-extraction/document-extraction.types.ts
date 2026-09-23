@@ -1,11 +1,14 @@
 export type ExtractionConfidence = 'IDENTIFIED' | 'REVIEW_REQUIRED' | 'UNIDENTIFIED';
+export type ExtractionConfidenceLevel = 'HIGH' | 'MEDIUM' | 'LOW';
 
 export interface CandidateField<T = string> {
   value: T;
   sourceSnippet?: string;
   confidence: ExtractionConfidence;
+  confidenceLevel?: ExtractionConfidenceLevel;
   warning?: string;
   requiresReview: boolean;
+  candidateOrderNumbers?: string[];
 }
 
 export interface ExtractedItem {
@@ -16,11 +19,28 @@ export interface ExtractedItem {
   quantity: number;
   note: string;
   confidence: ExtractionConfidence;
+  confidenceLevel?: ExtractionConfidenceLevel;
+}
+
+export interface AdditionalFieldInfo {
+  label: string;
+  value: string;
+  category?: 'FISCAL' | 'CLIENTE' | 'CONTATO' | 'SENSITIVE' | 'CLINICO' | 'OUTROS';
+  note?: string;
+  isSensitive?: boolean;
+}
+
+export interface ReferencedDocumentFile {
+  name: string;
+  note: string;
+  attached: boolean;
 }
 
 export interface FormExtractionResult {
   format: 'PDF' | 'IMAGE' | 'XLSX';
   isScannedPdf?: boolean;
+  modelId?: 'OUTLOOK_MS_FORMS' | 'KEY_VALUE_FORM' | 'GENERIC_TEXT';
+  modelName?: string;
   externalTicket: CandidateField;
   customerName: CandidateField;
   customerContact?: CandidateField;
@@ -32,7 +52,12 @@ export interface FormExtractionResult {
   description: CandidateField;
   internalNote?: CandidateField;
   suggestedAssignee?: CandidateField;
+  suggestedReason?: CandidateField;
+  suggestedSubreason?: CandidateField;
+  invoiceNumber?: CandidateField;
   items: ExtractedItem[];
+  additionalInfo?: AdditionalFieldInfo[];
+  referencedFiles?: ReferencedDocumentFile[];
   summary: {
     totalIdentified: number;
     totalReviewRequired: number;
