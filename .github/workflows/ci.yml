@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Lint, Testes e Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci?schema=public"
+      JWT_SECRET: "ci-testing-jwt-secret-not-used-in-production-12345"
+      WEB_ORIGIN: "http://localhost:5173"
+      PORT: "3333"
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Habilitar Corepack
+        run: corepack enable
+
+      - name: Instalar dependências (lockfile congelado)
+        run: pnpm install --frozen-lockfile
+
+      - name: Gerar Prisma Client
+        run: pnpm run db:generate
+
+      - name: Executar Lint e Tipagem
+        run: pnpm -r lint
+
+      - name: Executar Testes Automatizados (API e Web)
+        run: pnpm -r test
+
+      - name: Compilar Projetos de Produção (API e Web)
+        run: pnpm -r build
+
+      - name: Auditoria de Segurança de Arquivos Proibidos
+        run: |
+          echo "Verificando se arquivos sensíveis ou não autorizados entraram no repositório..."
+          if [ -f .env ]; then
+            echo "ERRO: Arquivo .env encontrado no repositório!" >&2
+            exit 1
+          fi
+          if find . -type f \( -name "*.pem" -o -name "*.key" -o -name "*.dump" -o -name "*.sql.gz" \) | grep -q .; then
+            echo "ERRO: Arquivos de chaves ou dumps encontrados no repositório!" >&2
+            exit 1
+          fi
+          echo "Auditoria de arquivos concluída com sucesso."

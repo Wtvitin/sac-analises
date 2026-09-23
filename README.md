@@ -16,6 +16,8 @@ Datas são persistidas em UTC. A interface usa inicialmente `America/Sao_Paulo`.
 - pnpm 10+
 - PostgreSQL 18 instalado localmente no Windows e disponível em `localhost:5432`
 
+> **Nota sobre infraestrutura:** O sistema foi projetado para execução nativa em Node.js e PostgreSQL diretamente no sistema operacional. Não há dependência de Docker para desenvolvimento, testes ou produção.
+
 ## Instalação
 
 ```bash
@@ -72,13 +74,89 @@ Frontend: `http://localhost:5173`
 API: `http://localhost:3333`  
 Saúde da API: `http://localhost:3333/health`
 
-## Validação
+## Validação e verificação de release
+
+Para validação em desenvolvimento:
 
 ```bash
 pnpm lint
 pnpm test
 pnpm build
 ```
+
+Para verificação completa e unificada pré-release/deploy (auditoria de arquivos sensíveis, integridade de migrações, Prisma generate, tipagem, testes e build):
+
+```bash
+pnpm release:check
+```
+
+## Repositório remoto e controle de versão
+
+### Diferença entre Git local e GitHub
+
+- **Git local:** É o sistema de controle de versão distribuído que rastreia os commits, galhos (*branches*) e alterações diretamente no armazenamento local da sua máquina. Permite trabalho offline, inspeção de histórico e desenvolvimento seguro sem expor qualquer código publicamente.
+- **GitHub:** É o serviço em nuvem que hospeda a cópia remota compartilhada do repositório. O envio do código (*push*) para o GitHub permite backup em nuvem, controle de acesso para colaboradores e acionamento de fluxos automatizados de integração contínua (CI).
+
+### Procedimento seguro para configurar um repositório privado
+
+1. Crie um repositório vazio no GitHub configurado obrigatoriamente como **Private**.
+2. Não inicialize o repositório no GitHub com README, `.gitignore` ou licença (o projeto local já possui esses artefatos configurados e validados).
+3. Utilize autenticação segura gerenciada localmente via SSH ou Git Credential Manager (GCM) com Personal Access Token (PAT) com escopo restrito (`repo`).
+4. Vincule o repositório remoto:
+   ```bash
+   git remote add origin https://github.com/<usuario-ou-organizacao>/<nome-do-repositorio>.git
+   ```
+5. Envie a branch principal:
+   ```bash
+   git push -u origin main
+   ```
+
+> **Aviso de segurança:** Nunca compartilhe senhas, tokens de acesso pessoal (PAT), chaves SSH privadas ou credenciais de banco de dados em chats, mensagens ou arquivos versionados. Todas as credenciais de autenticação devem ser mantidas restritas ao ambiente seguro do operador.
+
+### Política de arquivos de upload e dados pessoais
+
+- Arquivos enviados por usuários (documentos, evidências, imagens de formulários, planilhas) e qualquer evidência contendo dados pessoais de clientes ou atendimentos **nunca** devem ser comitados no Git.
+- Os diretórios locais de upload (`data/uploads/`, `apps/api/uploads/`) e arquivos temporários de importação estão estritamente bloqueados no `.gitignore`.
+- Em ambiente de produção, utilize armazenamento persistente isolado ou bucket de object storage dedicado com controle de acesso rigoroso e criptografia em repouso.
+
+## Variáveis de ambiente para produção
+
+Em produção, as variáveis devem ser configuradas diretamente no painel seguro do ambiente de execução, sem versionar nenhum arquivo `.env`:
+
+- `NODE_ENV`: Deve ser definido como `production` (habilita flag `Secure` em cookies e otimizações de runtime).
+- `PORT`: Porta de escuta da API (ex.: `3333`).
+- `DATABASE_URL`: String de conexão segura com o PostgreSQL em produção (com SSL/TLS obrigatório quando suportado).
+- `JWT_SECRET`: Segredo criptográfico de alta entropia para assinatura dos tokens JWT (mínimo de 32 caracteres aleatórios).
+- `WEB_ORIGIN`: Origem exata e autorizada do frontend (ex.: `https://sac.dominio.com.br`), sem barra no final. Curingas (`*`) são terminantemente proibidos.
+- `TRUST_PROXY`: Configuração de proxy reverso (`false`, `loopback` ou quantidade/IPs dos proxies de terminação TLS).
+- `REGISTRATION_ENABLED`: Mantido como `false` por padrão.
+- `STORAGE_DRIVER`: `local` ou `s3`.
+- Se `STORAGE_DRIVER=s3`:
+  - `STORAGE_S3_ENDPOINT`: URL do endpoint do serviço de object storage.
+  - `STORAGE_S3_REGION`: Região do bucket.
+  - `STORAGE_S3_BUCKET`: Nome do bucket privado.
+  - `STORAGE_S3_ACCESS_KEY_ID`: Chave de identificação de acesso.
+  - `STORAGE_S3_SECRET_ACCESS_KEY`: Chave secreta de acesso.
+
+## Checklists operacionais
+
+### Checklist anterior ao primeiro push
+
+- [ ] Confirmar que o working tree do Git está limpo e sem modificações não intencionais (`git status`).
+- [ ] Confirmar que arquivos `.env` e arquivos locais de ambiente não estão rastreados nem no stage.
+- [ ] Confirmar que nenhum diretório de uploads (`data/uploads/`, `apps/api/uploads/`) contém arquivos reais rastreados.
+- [ ] Confirmar ausência de dumps de banco de dados, backups (`*.dump`, `*.sql.gz`, `*.bak`) e chaves privadas (`*.pem`, `*.key`).
+- [ ] Executar com êxito a verificação unificada de release: `pnpm run release:check`.
+- [ ] Confirmar que o repositório remoto criado no GitHub está explicitamente definido como **Private**.
+
+### Checklist anterior ao deploy
+
+- [ ] Executar com êxito a verificação unificada de release: `pnpm run release:check`.
+- [ ] Confirmar que o banco de dados PostgreSQL de produção está acessível e com rotinas de backup ativas.
+- [ ] Aplicar migrações versionadas pendentes com comando controlado: `pnpm --filter @sac/api prisma migrate deploy` (nunca use `migrate reset` ou `db push`).
+- [ ] Configurar todas as variáveis de ambiente necessárias no painel da infraestrutura sem versioná-las.
+- [ ] Inicializar o primeiro administrador utilizando o comando seguro `admin:create`.
+- [ ] Validar a rota de saúde `/health` após a inicialização da API.
 
 ## Decisões do primeiro incremento
 

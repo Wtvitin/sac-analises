@@ -2,40 +2,77 @@
 node_modules/
 .pnpm-store/
 
-# Builds
+# Builds e arquivos intermediários
 dist/
 build/
 .vite/
 *.tsbuildinfo
 
-# Ambiente e segredos
+# Ambiente e segredos (NUNCA versione arquivos .env reais)
 .env
 .env.local
 .env.*.local
+.env.development
+.env.test
+.env.production
 !.env.example
+!.env.*.example
 
 # Logs
 *.log
 logs/
 npm-debug.log*
 pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Testes
+# Testes e cobertura
 coverage/
 playwright-report/
 test-results/
 
-# Arquivos temporários
+# Arquivos temporários e cache
 tmp/
 temp/
 .cache/
+*.tmp
+*.swp
+*.swo
+*~
 
-# Sistema e editores
+# Sistema operacional e editores
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
 
-# Uploads locais
+# Armazenamento local de uploads e importações temporárias
 uploads/*
 !uploads/.gitkeep
+data/uploads/*
+!data/uploads/.gitkeep
+apps/api/uploads/*
+!apps/api/uploads/.gitkeep
+
+# Backups e dumps de banco de dados
+*.sql.gz
+*.dump
+*.bak
+*.backup
+dumps/
+
+# Certificados, chaves privadas e credenciais
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Relatórios com dados sensíveis ou exportações
+reports/
+relatorios/
+exports/
+
+# Artefatos SQLite ou bases locais acidentais
+*.db
+*.db-journal
