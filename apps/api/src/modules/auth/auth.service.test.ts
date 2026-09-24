@@ -47,7 +47,7 @@ describe('ciclo de autenticação e acesso', () => {
   it('altera a própria senha, incrementa a versão e audita sem conteúdo sensível', async () => {
     mock.database.user.findUniqueOrThrow.mockResolvedValue({ passwordHash: 'old-hash' }); mock.bcrypt.compare.mockResolvedValueOnce(true).mockResolvedValueOnce(false); mock.database.user.update.mockResolvedValue({ id: 'user-1' });
     await changeOwnPassword('user-1', { currentPassword: 'SenhaAnterior123', newPassword: 'SenhaNovaSegura123', confirmPassword: 'SenhaNovaSegura123' });
-    expect(mock.database.user.update).toHaveBeenCalledWith(expect.objectContaining({ data: { passwordHash: 'safe-hash', tokenVersion: { increment: 1 } } }));
+    expect(mock.database.user.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ passwordHash: 'safe-hash', tokenVersion: { increment: 1 }, mustChangePassword: false }) }));
     expect(mock.database.authSession.updateMany).toHaveBeenCalledWith({ where: { userId: 'user-1', revokedAt: null }, data: { revokedAt: expect.any(Date) } });
     const audit = mock.database.adminAudit.create.mock.calls[0][0]; expect(audit.data).toMatchObject({ type: 'PASSWORD_CHANGED', actorId: 'user-1', targetUserId: 'user-1' });
     expect(JSON.stringify(audit)).not.toMatch(/Senha|hash/i);

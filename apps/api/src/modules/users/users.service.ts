@@ -2,11 +2,28 @@ import { Prisma, type UserRole } from '@prisma/client';
 import type { z } from 'zod';
 import { prisma } from '../../lib/prisma.js';
 import { createCaseNotification } from '../notifications/notification.service.js';
-import type { changeRoleSchema, deactivateUserSchema, listUsersSchema } from './users.schema.js';
+import { generateProvisionalPassword, hashPassword } from '../../lib/auth/provisional-password.js';
+import { sendProvisionalPasswordEmail } from '../../lib/email/email.service.js';
+import type { changeRoleSchema, createUserSchema, deactivateUserSchema, listUsersSchema } from './users.schema.js';
 
-type ListInput = z.infer<typeof listUsersSchema>; type ChangeRoleInput = z.infer<typeof changeRoleSchema>; type DeactivateInput = z.infer<typeof deactivateUserSchema>;
+type ListInput = z.infer<typeof listUsersSchema>;
+type ChangeRoleInput = z.infer<typeof changeRoleSchema>;
+type DeactivateInput = z.infer<typeof deactivateUserSchema>;
+type CreateUserInput = z.infer<typeof createUserSchema>;
 export class UserManagementError extends Error { constructor(public code: string, message: string, public status: number) { super(message); } }
-const userSelect = { id: true, name: true, email: true, role: true, active: true, approvedAt: true, rejectedAt: true, lastLoginAt: true, createdAt: true } as const;
+const userSelect = {
+  id: true,
+  name: true,
+  email: true,
+  role: true,
+  active: true,
+  approvedAt: true,
+  rejectedAt: true,
+  lastLoginAt: true,
+  createdAt: true,
+  mustChangePassword: true,
+  provisionalPasswordExpiresAt: true,
+} as const;
 const ADMIN_LOCK = Prisma.sql`SELECT pg_advisory_xact_lock(734221, 7)`;
 
 function approvalWhere(value: ListInput['approval']): Prisma.UserWhereInput {
@@ -50,24 +67,336 @@ async function revokeSessions(tx: Prisma.TransactionClient, userId: string, revo
 
 function lastAdminError() { return new UserManagementError('LAST_ADMIN_PROTECTED', 'Mantenha pelo menos um administrador ativo e aprovado.', 409); }
 
+function assertAdminActionAllowed(targetUser: { id: string; role: UserRole }, actorId: string, actionName: string = 'alterar') {
+  if (targetUser.id === actorId) {
+    throw new UserManagementError(
+      'SELF_ACTION_BLOCKED',
+      'Não é permitido executar ações administrativas na própria conta.',
+      403
+    );
+  }
+  if (targetUser.role === 'ADMIN') {
+    throw new UserManagementError(
+      'ADMIN_PROTECTION',
+      `Não é permitido ${actionName} outro administrador.`,
+      403
+    );
+  }
+}
+
 export async function approveUser(targetUserId: string, role: 'ANALYST' | 'VIEWER', actorId: string) {
-  return prisma.$transaction(async tx => {
-    const current = await tx.user.findUnique({ where: { id: targetUserId }, select: { ...userSelect, approvedById: true } });
-    if (!current) throw new UserManagementError('USER_NOT_FOUND', 'Usuário não encontrado.', 404);
-    if (current.approvedAt && !current.rejectedAt) return current;
-    const approvedAt = new Date();
-    const changed = await tx.user.updateMany({ where: { id: targetUserId, approvedAt: null }, data: { role, active: true, approvedAt, approvedById: actorId, rejectedAt: null, rejectionReason: null, tokenVersion: { increment: 1 } } });
-    if (!changed.count) return tx.user.findUniqueOrThrow({ where: { id: targetUserId }, select: userSelect });
-    const sessions = await revokeSessions(tx, targetUserId, approvedAt);
-    await tx.adminAudit.create({ data: { type: 'ACCESS_APPROVED', actorId, targetUserId, metadata: { role, sessionsRevoked: sessions.count } } });
-    return tx.user.findUniqueOrThrow({ where: { id: targetUserId }, select: userSelect });
+  const current = await prisma.user.findUnique({
+    where: { id: targetUserId },
+    select: { ...userSelect, approvedById: true },
+  });
+  if (!current) throw new UserManagementError('USER_NOT_FOUND', 'Usuário não encontrado.', 404);
+  assertAdminActionAllowed(current, actorId, 'aprovar');
+  if (current.approvedAt && current.active && !current.rejectedAt) {
+    return {
+      ...current,
+      emailDelivery: {
+        success: true,
+        delivered: true,
+        adapter: 'none',
+        statusMessage: 'Usuário já aprovado',
+      },
+    };
+  }
+
+  const provisionalPassword = generateProvisionalPassword();
+  const provisionalPasswordHash = await hashPassword(provisionalPassword);
+  const now = new Date();
+  const provisionalPasswordExpiresAt = new Date(Date.now() + 48 * 3600 * 1000);
+
+  // 1. Tentar envio de e-mail ANTES de ativar o usuário
+  const emailResult = await sendProvisionalPasswordEmail({
+    to: current.email,
+    name: current.name,
+    provisionalPassword,
+    expiresAt: provisionalPasswordExpiresAt,
+  });
+
+  // 2. Se o envio de e-mail falhou (servidor real falhou)
+  if (!emailResult.success) {
+    await prisma.adminAudit.create({
+      data: {
+        type: 'PROVISIONAL_PASSWORD_GENERATED',
+        actorId,
+        targetUserId,
+        metadata: {
+          emailSuccess: false,
+          emailDelivered: false,
+          error: 'Falha no envio de e-mail',
+          adapter: emailResult.adapter,
+        },
+      },
+    });
+
+    throw new UserManagementError(
+      'EMAIL_DELIVERY_FAILED',
+      'Não foi possível enviar o e-mail com a senha provisória. A solicitação permanece pendente e pode ser tentada novamente.',
+      502
+    );
+  }
+
+  // 3. Se for modo de prévia ou envio não entregue (emailResult.delivered === false)
+  // A conta NÃO é ativada pois a ativação exige confirmação de envio pelo servidor de e-mail
+  if (!emailResult.delivered) {
+    const updated = await prisma.$transaction(async tx => {
+      const user = await tx.user.update({
+        where: { id: targetUserId },
+        data: {
+          role,
+          active: false, // Permanece inativo
+          approvedAt: null, // Ativação pendente até envio real
+          mustChangePassword: true,
+          passwordHash: provisionalPasswordHash,
+          provisionalPasswordHash,
+          provisionalPasswordCreatedAt: now,
+          provisionalPasswordExpiresAt,
+          rejectedAt: null,
+          rejectionReason: null,
+        },
+        select: userSelect,
+      });
+
+      await tx.adminAudit.create({
+        data: {
+          type: 'PROVISIONAL_PASSWORD_GENERATED',
+          actorId,
+          targetUserId,
+          metadata: {
+            expiresAt: provisionalPasswordExpiresAt.toISOString(),
+            emailDelivered: false,
+            emailSuccess: true,
+            emailAdapter: emailResult.adapter,
+            statusMessage: 'E-mail não enviado; conta inativa',
+            previewMode: true,
+          },
+        },
+      });
+
+      return user;
+    });
+
+    return {
+      ...updated,
+      emailDelivery: {
+        success: true,
+        delivered: false,
+        adapter: emailResult.adapter,
+        statusMessage: 'E-mail não enviado; conta inativa',
+        expiresAt: provisionalPasswordExpiresAt,
+      },
+    };
+  }
+
+  // 4. Se a entrega real foi aceita pelo servidor SMTP (emailResult.delivered === true)
+  const { user, sessionsRevoked } = await prisma.$transaction(async tx => {
+    const updated = await tx.user.update({
+      where: { id: targetUserId },
+      data: {
+        role,
+        active: true,
+        approvedAt: now,
+        approvedById: actorId,
+        rejectedAt: null,
+        rejectionReason: null,
+        tokenVersion: { increment: 1 },
+        passwordHash: provisionalPasswordHash,
+        mustChangePassword: true,
+        provisionalPasswordHash,
+        provisionalPasswordCreatedAt: now,
+        provisionalPasswordExpiresAt,
+      },
+      select: userSelect,
+    });
+
+    const sessions = await revokeSessions(tx, targetUserId, now);
+
+    await tx.adminAudit.create({
+      data: {
+        type: 'ACCESS_APPROVED',
+        actorId,
+        targetUserId,
+        metadata: {
+          role,
+          sessionsRevoked: sessions.count,
+          emailDelivered: true,
+          emailSuccess: true,
+          emailAdapter: emailResult.adapter,
+          statusMessage: 'Envio aceito pelo servidor de e-mail; conta ativada',
+        },
+      },
+    });
+
+    await tx.adminAudit.create({
+      data: {
+        type: 'PROVISIONAL_PASSWORD_GENERATED',
+        actorId,
+        targetUserId,
+        metadata: {
+          expiresAt: provisionalPasswordExpiresAt.toISOString(),
+          emailDelivered: true,
+          emailSuccess: true,
+          emailAdapter: emailResult.adapter,
+        },
+      },
+    });
+
+    return { user: updated, sessionsRevoked: sessions.count };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+
+  return {
+    ...user,
+    emailDelivery: {
+      success: true,
+      delivered: true,
+      adapter: emailResult.adapter,
+      statusMessage: 'Envio aceito pelo servidor de e-mail; conta ativada',
+    },
+  };
+}
+
+export async function completeActivation(_targetUserId: string, _actorId: string) {
+  throw new UserManagementError(
+    'MANUAL_ACTIVATION_DISABLED',
+    'A ativação manual foi desabilitada. A conta só pode ser ativada após a confirmação de envio pelo servidor de e-mail.',
+    400
+  );
+}
+
+export async function resendProvisionalPassword(targetUserId: string, actorId: string) {
+  const current = await prisma.user.findUnique({
+    where: { id: targetUserId },
+    select: { ...userSelect, approvedById: true },
+  });
+  if (!current) throw new UserManagementError('USER_NOT_FOUND', 'Usuário não encontrado.', 404);
+  assertAdminActionAllowed(current, actorId, 'reenviar senha para');
+  if (!current.approvedAt || current.rejectedAt) {
+    throw new UserManagementError('USER_NOT_APPROVED', 'Apenas usuários aprovados podem receber nova senha provisória.', 422);
+  }
+  if (!current.active) {
+    throw new UserManagementError('USER_INACTIVE', 'Usuário inativo não pode receber nova senha provisória.', 422);
+  }
+
+  const provisionalPassword = generateProvisionalPassword();
+  const provisionalPasswordHash = await hashPassword(provisionalPassword);
+  const now = new Date();
+  const provisionalPasswordExpiresAt = new Date(Date.now() + 48 * 3600 * 1000);
+
+  // 1. Tentar envio de e-mail ANTES de invalidar senha anterior
+  const emailResult = await sendProvisionalPasswordEmail({
+    to: current.email,
+    name: current.name,
+    provisionalPassword,
+    expiresAt: provisionalPasswordExpiresAt,
+  });
+
+  if (!emailResult.success) {
+    await prisma.adminAudit.create({
+      data: {
+        type: 'PROVISIONAL_PASSWORD_RESENT',
+        actorId,
+        targetUserId,
+        metadata: {
+          emailSuccess: false,
+          emailDelivered: false,
+          error: 'Falha no reenvio de e-mail',
+          adapter: emailResult.adapter,
+          statusMessage: 'Falha no envio de e-mail; credenciais anteriores preservadas',
+        },
+      },
+    });
+
+    throw new UserManagementError(
+      'EMAIL_DELIVERY_FAILED',
+      'Não foi possível reenviar o e-mail com a senha provisória. As credenciais anteriores foram preservadas.',
+      502
+    );
+  }
+
+  // Se o envio não foi aceito pelo servidor de e-mail (modo de prévia ou não entregue),
+  // PRESERVA as credenciais e sessões existentes sem invalidar o acesso atual do usuário
+  if (!emailResult.delivered) {
+    await prisma.adminAudit.create({
+      data: {
+        type: 'PROVISIONAL_PASSWORD_RESENT',
+        actorId,
+        targetUserId,
+        metadata: {
+          emailDelivered: false,
+          emailSuccess: true,
+          emailAdapter: emailResult.adapter,
+          statusMessage: 'E-mail não enviado; credenciais anteriores preservadas',
+        },
+      },
+    });
+
+    return {
+      ...current,
+      emailDelivery: {
+        success: true,
+        delivered: false,
+        adapter: emailResult.adapter,
+        statusMessage: 'E-mail não enviado; credenciais anteriores preservadas',
+        expiresAt: current.provisionalPasswordExpiresAt,
+      },
+    };
+  }
+
+  // Envio aceito pelo servidor SMTP -> atualiza hash da senha e revoga sessões anteriores
+  const updatedUser = await prisma.$transaction(async tx => {
+    const updated = await tx.user.update({
+      where: { id: targetUserId },
+      data: {
+        passwordHash: provisionalPasswordHash,
+        mustChangePassword: true,
+        provisionalPasswordHash,
+        provisionalPasswordCreatedAt: now,
+        provisionalPasswordExpiresAt,
+        tokenVersion: { increment: 1 },
+      },
+      select: userSelect,
+    });
+
+    await revokeSessions(tx, targetUserId, now);
+
+    await tx.adminAudit.create({
+      data: {
+        type: 'PROVISIONAL_PASSWORD_RESENT',
+        actorId,
+        targetUserId,
+        metadata: {
+          expiresAt: provisionalPasswordExpiresAt.toISOString(),
+          emailDelivered: true,
+          emailSuccess: true,
+          emailAdapter: emailResult.adapter,
+          statusMessage: 'Envio aceito pelo servidor de e-mail',
+        },
+      },
+    });
+
+    return updated;
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+
+  return {
+    ...updatedUser,
+    emailDelivery: {
+      success: true,
+      delivered: true,
+      adapter: emailResult.adapter,
+      statusMessage: 'Envio aceito pelo servidor de e-mail',
+      expiresAt: provisionalPasswordExpiresAt,
+    },
+  };
 }
 
 export async function rejectUser(targetUserId: string, reason: string, actorId: string) {
   const result = await prisma.$transaction(async tx => {
     const current = await tx.user.findUnique({ where: { id: targetUserId }, select: { role: true, active: true, approvedAt: true, rejectedAt: true } });
     if (!current) throw new UserManagementError('USER_NOT_FOUND', 'Usuário não encontrado.', 404);
+    assertAdminActionAllowed({ id: targetUserId, role: current.role }, actorId, 'recusar');
     if (current.rejectedAt) return { blocked: false as const, user: await tx.user.findUniqueOrThrow({ where: { id: targetUserId }, select: userSelect }) };
     if (current.role === 'ADMIN' && current.active && current.approvedAt && await isLastAdministrator(tx, targetUserId)) { await tx.adminAudit.create({ data: { type: 'LAST_ADMIN_BLOCKED', actorId, targetUserId, metadata: { action: 'reject' } } }); return { blocked: true as const }; }
     if (current.approvedAt) throw new UserManagementError('USER_ALREADY_APPROVED', 'Use a inativação para uma conta já aprovada.', 422);
@@ -80,14 +409,23 @@ export async function rejectUser(targetUserId: string, reason: string, actorId: 
 
 const roleRank: Record<UserRole, number> = { VIEWER: 1, ANALYST: 2, ADMIN: 3 };
 export async function changeUserRole(targetUserId: string, input: ChangeRoleInput, actorId: string) {
+  if ((input.role as string) === 'ADMIN') {
+    throw new UserManagementError(
+      'ADMIN_PROMOTION_DISABLED',
+      'A alteração para perfil Administrador não é permitida pela gestão de equipe.',
+      422
+    );
+  }
+
   const result = await prisma.$transaction(async tx => {
     const current = await tx.user.findUnique({ where: { id: targetUserId }, select: { role: true, active: true, approvedAt: true, rejectedAt: true } });
     if (!current) throw new UserManagementError('USER_NOT_FOUND', 'Usuário não encontrado.', 404);
+    assertAdminActionAllowed({ id: targetUserId, role: current.role }, actorId, 'alterar perfil de');
     if (current.role === input.role) return { blocked: false as const, user: await tx.user.findUniqueOrThrow({ where: { id: targetUserId }, select: userSelect }) };
     if (!current.approvedAt || current.rejectedAt) throw new UserManagementError('USER_NOT_APPROVED', 'Aprove a conta antes de alterar seu perfil.', 422);
-    const needsReason = input.role === 'ADMIN' || current.role === 'ADMIN' || roleRank[input.role] < roleRank[current.role];
+    const needsReason = roleRank[input.role] < roleRank[current.role];
     if (needsReason && !input.justification?.trim()) throw new UserManagementError('JUSTIFICATION_REQUIRED', 'Informe a justificativa para esta alteração de perfil.', 422);
-    if (current.role === 'ADMIN' && input.role !== 'ADMIN' && current.active && current.approvedAt && await isLastAdministrator(tx, targetUserId)) { await tx.adminAudit.create({ data: { type: 'LAST_ADMIN_BLOCKED', actorId, targetUserId, metadata: { action: 'role-change' } } }); return { blocked: true as const }; }
+    if (current.role === 'ADMIN' && (input.role as string) !== 'ADMIN' && current.active && current.approvedAt && await isLastAdministrator(tx, targetUserId)) { await tx.adminAudit.create({ data: { type: 'LAST_ADMIN_BLOCKED', actorId, targetUserId, metadata: { action: 'role-change' } } }); return { blocked: true as const }; }
     const user = await tx.user.update({ where: { id: targetUserId }, data: { role: input.role, tokenVersion: { increment: 1 } }, select: userSelect });
     const sessions = await revokeSessions(tx, targetUserId);
     await tx.adminAudit.create({ data: { type: 'ROLE_CHANGED', actorId, targetUserId, justification: input.justification, metadata: { from: current.role, to: input.role, sessionsRevoked: sessions.count } } }); return { blocked: false as const, user };
@@ -99,6 +437,7 @@ export async function deactivateUser(targetUserId: string, input: DeactivateInpu
   const result = await prisma.$transaction(async tx => {
     const current = await tx.user.findUnique({ where: { id: targetUserId }, select: { role: true, active: true, approvedAt: true } });
     if (!current) throw new UserManagementError('USER_NOT_FOUND', 'Usuário não encontrado.', 404);
+    assertAdminActionAllowed({ id: targetUserId, role: current.role }, actorId, 'inativar');
     if (!current.active) return { blocked: false as const, user: await tx.user.findUniqueOrThrow({ where: { id: targetUserId }, select: userSelect }) };
     if (current.role === 'ADMIN' && current.approvedAt && await isLastAdministrator(tx, targetUserId)) { await tx.adminAudit.create({ data: { type: 'LAST_ADMIN_BLOCKED', actorId, targetUserId, metadata: { action: 'deactivate' } } }); return { blocked: true as const }; }
     const cases = await tx.sacRecord.findMany({ where: { assigneeId: targetUserId, archivedAt: null, status: { in: ['PENDING', 'IN_PROGRESS'] } }, select: { id: true, ticket: true } });
@@ -127,14 +466,158 @@ export async function deactivateUser(targetUserId: string, input: DeactivateInpu
 
 export async function reactivateUser(targetUserId: string, reason: string, actorId: string) {
   return prisma.$transaction(async tx => {
-    const current = await tx.user.findUnique({ where: { id: targetUserId }, select: { active: true, approvedAt: true, rejectedAt: true } });
+    const current = await tx.user.findUnique({ where: { id: targetUserId }, select: { role: true, active: true, approvedAt: true, rejectedAt: true } });
     if (!current) throw new UserManagementError('USER_NOT_FOUND', 'Usuário não encontrado.', 404);
+    assertAdminActionAllowed({ id: targetUserId, role: current.role }, actorId, 'reativar');
     if (!current.approvedAt || current.rejectedAt) throw new UserManagementError('USER_NOT_APPROVED', 'Somente contas aprovadas podem ser reativadas.', 422);
     if (current.active) return tx.user.findUniqueOrThrow({ where: { id: targetUserId }, select: userSelect });
     const user = await tx.user.update({ where: { id: targetUserId }, data: { active: true, tokenVersion: { increment: 1 } }, select: userSelect });
     const sessions = await revokeSessions(tx, targetUserId);
     await tx.adminAudit.create({ data: { type: 'USER_REACTIVATED', actorId, targetUserId, justification: reason, metadata: { sessionsRevoked: sessions.count } } }); return user;
   });
+}
+
+export async function createUser(input: CreateUserInput, actorId: string) {
+  const normalizedEmail = input.email.trim().toLowerCase();
+  const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+  if (existing) {
+    throw new UserManagementError('EMAIL_ALREADY_REGISTERED', 'Já existe um usuário cadastrado com este e-mail.', 409);
+  }
+
+  const provisionalPassword = generateProvisionalPassword();
+  const provisionalPasswordHash = await hashPassword(provisionalPassword);
+  const now = new Date();
+  const provisionalPasswordExpiresAt = new Date(Date.now() + 48 * 3600 * 1000);
+
+  // 1. PERSISTIR PRIMEIRO: cria o usuário inativo no banco, apenas com hash da senha provisória
+  let createdUser;
+  try {
+    createdUser = await prisma.$transaction(async tx => {
+      const user = await tx.user.create({
+        data: {
+          name: input.name.trim(),
+          email: normalizedEmail,
+          role: input.role,
+          active: false, // Inativo até envio aceito
+          approvedAt: null, // Pendente até envio aceito
+          approvedById: null,
+          mustChangePassword: true,
+          passwordHash: provisionalPasswordHash,
+          provisionalPasswordHash,
+          provisionalPasswordCreatedAt: now,
+          provisionalPasswordExpiresAt,
+        },
+        select: userSelect,
+      });
+
+      await tx.adminAudit.create({
+        data: {
+          type: 'PROVISIONAL_PASSWORD_GENERATED',
+          actorId,
+          targetUserId: user.id,
+          metadata: {
+            role: input.role,
+            createdByAdmin: true,
+            expiresAt: provisionalPasswordExpiresAt.toISOString(),
+            statusMessage: 'Usuário cadastrado inativo; aguardando envio aceito pelo servidor de e-mail',
+          },
+        },
+      });
+
+      return user;
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      throw new UserManagementError('EMAIL_ALREADY_REGISTERED', 'Já existe um usuário cadastrado com este e-mail.', 409);
+    }
+    throw error;
+  }
+
+  // 2. DISPARO DO E-MAIL: realizado somente após a persistência bem-sucedida
+  let emailResult;
+  try {
+    emailResult = await sendProvisionalPasswordEmail({
+      to: normalizedEmail,
+      name: input.name.trim(),
+      provisionalPassword,
+      expiresAt: provisionalPasswordExpiresAt,
+    });
+  } catch {
+    emailResult = { success: false, delivered: false, adapter: 'error' as const };
+  }
+
+  // 3. Se o envio NÃO foi aceito pelo servidor SMTP (modo de prévia ou falha de entrega)
+  // A conta permanece inativa e recuperável para aprovação posterior
+  if (!emailResult.delivered || !emailResult.success) {
+    await prisma.adminAudit.create({
+      data: {
+        type: 'PROVISIONAL_PASSWORD_GENERATED',
+        actorId,
+        targetUserId: createdUser.id,
+        metadata: {
+          role: input.role,
+          createdByAdmin: true,
+          emailDelivered: false,
+          emailSuccess: Boolean(emailResult.success),
+          emailAdapter: emailResult.adapter,
+          statusMessage: 'E-mail não enviado; conta inativa',
+        },
+      },
+    });
+
+    return {
+      ...createdUser,
+      emailDelivery: {
+        success: Boolean(emailResult.success),
+        delivered: false,
+        adapter: emailResult.adapter,
+        statusMessage: 'E-mail não enviado; conta inativa',
+        expiresAt: provisionalPasswordExpiresAt,
+      },
+    };
+  }
+
+  // 4. Envio aceito pelo servidor SMTP -> Ativar a conta
+  const activatedUser = await prisma.$transaction(async tx => {
+    const updated = await tx.user.update({
+      where: { id: createdUser.id },
+      data: {
+        active: true,
+        approvedAt: now,
+        approvedById: actorId,
+      },
+      select: userSelect,
+    });
+
+    await tx.adminAudit.create({
+      data: {
+        type: 'ACCESS_APPROVED',
+        actorId,
+        targetUserId: createdUser.id,
+        metadata: {
+          role: input.role,
+          createdByAdmin: true,
+          emailDelivered: true,
+          emailSuccess: true,
+          emailAdapter: emailResult.adapter,
+          statusMessage: 'Envio aceito pelo servidor de e-mail; conta ativada',
+        },
+      },
+    });
+
+    return updated;
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+
+  return {
+    ...activatedUser,
+    emailDelivery: {
+      success: true,
+      delivered: true,
+      adapter: emailResult.adapter,
+      statusMessage: 'Envio aceito pelo servidor de e-mail; conta ativada',
+      expiresAt: provisionalPasswordExpiresAt,
+    },
+  };
 }
 
 export async function listUserAudits(targetUserId: string) { return prisma.adminAudit.findMany({ where: { targetUserId }, select: { id: true, type: true, justification: true, metadata: true, createdAt: true, actor: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 50 }); }

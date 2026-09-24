@@ -15,6 +15,28 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     const session = await currentSession(payload.sessionId, payload.sub); const user = session?.user;
     if (!user || !user.active || !user.approvedAt || user.rejectedAt || user.tokenVersion !== payload.version) throw new Error('invalid account state');
     if (session!.tokenVersion !== payload.version) throw new Error('invalid session version');
+
+    if (user.mustChangePassword) {
+      const targetPath = ((req.baseUrl || '') + (req.path || req.originalUrl || req.url || '')).replace(/\/+/g, '/');
+      const allowedPaths = [
+        '/auth/session',
+        '/auth/change-password',
+        '/auth/logout',
+        '/auth/logout-all',
+        '/auth/logout-others',
+        '/auth/me',
+      ];
+      const isAllowed = allowedPaths.some(p => targetPath === p || targetPath.endsWith(p));
+      if (!isAllowed) {
+        return res.status(403).json({
+          error: {
+            code: 'PASSWORD_CHANGE_REQUIRED',
+            message: 'Defina sua nova senha antes de acessar o sistema.',
+          },
+        });
+      }
+    }
+
     req.auth = { userId: user.id, role: user.role, sessionId: session!.id }; return next();
   } catch { return res.status(401).json({ error: { code: 'INVALID_SESSION', message: 'Sua sessão expirou. Entre novamente.' } }); }
 }

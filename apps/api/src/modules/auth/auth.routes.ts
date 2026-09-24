@@ -1,7 +1,7 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import { normalizeEmail } from './auth.schema.js';
-import { ACCESS_REQUEST_MESSAGE, AuthError, authenticate, changeOwnPassword, getOwnProfile, requestAccess, updateOwnProfile } from './auth.service.js';
+import { ACCESS_REQUEST_MESSAGE, AuthError, authenticate, changeOwnPassword, getOwnProfile, requestAccess, requestPasswordReset, resetPasswordWithToken, updateOwnProfile } from './auth.service.js';
 import { requireAuth } from './auth.middleware.js';
 import { ACCESS_COOKIE, REFRESH_COOKIE, clearAuthenticationCookies, issueCsrfCookie, readCookie, setAuthenticationCookies } from './auth.cookies.js';
 import { createSession, revokeAllSessions, revokeOtherSessions, revokeRefreshSession, rotateSession } from './session.service.js';
@@ -12,6 +12,8 @@ const loginLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 8, standardHeader
 const registrationIpLimiter = rateLimit({ windowMs: 30 * 60_000, limit: 5, standardHeaders: true, legacyHeaders: false, handler: rateLimitHandler('registration-ip') });
 const passwordLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 6, standardHeaders: true, legacyHeaders: false, handler: rateLimitHandler('password-change') });
 const refreshLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 30, standardHeaders: true, legacyHeaders: false, handler: rateLimitHandler('refresh') });
+const forgotPasswordLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 5, standardHeaders: true, legacyHeaders: false, handler: rateLimitHandler('forgot-password') });
+const resetPasswordLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 5, standardHeaders: true, legacyHeaders: false, handler: rateLimitHandler('reset-password') });
 const emailAttempts = new Map<string, { count: number; resetAt: number }>();
 const registrationEnabled = () => process.env.REGISTRATION_ENABLED === 'true';
 
@@ -43,4 +45,6 @@ authRouter.post('/register', registrationIpLimiter, registrationEmailLimiter, as
 authRouter.get('/me', requireAuth, async (req, res) => res.json({ data: await getOwnProfile(req.auth!.userId) }));
 authRouter.patch('/me', requireAuth, async (req, res) => res.json({ data: await updateOwnProfile(req.auth!.userId, req.body) }));
 authRouter.post('/change-password', passwordLimiter, requireAuth, async (req, res, next) => { try { await changeOwnPassword(req.auth!.userId, req.body); clearAuthenticationCookies(res); res.status(204).send(); } catch (error) { next(error); } });
+authRouter.post('/forgot-password', forgotPasswordLimiter, async (req, res, next) => { try { const result = await requestPasswordReset(req.body); res.json({ data: result }); } catch (error) { next(error); } });
+authRouter.post('/reset-password', resetPasswordLimiter, async (req, res, next) => { try { const result = await resetPasswordWithToken(req.body); clearAuthenticationCookies(res); res.json({ data: result }); } catch (error) { next(error); } });
 authRouter.use((error: unknown, _req: Request, res: Response, next: NextFunction) => error instanceof AuthError ? res.status(error.status).json({ error: { code: error.code, message: error.message } }) : next(error));

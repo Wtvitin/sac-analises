@@ -5,13 +5,35 @@ import { getSecurityConfig } from '../../config.js';
 import { prisma } from '../../lib/prisma.js';
 import { AuthError } from './auth.service.js';
 
-const sessionUserSelect = { id: true, name: true, email: true, role: true, active: true, approvedAt: true, rejectedAt: true, tokenVersion: true, timezone: true, lastLoginAt: true } as const;
+const sessionUserSelect = {
+  id: true,
+  name: true,
+  email: true,
+  role: true,
+  active: true,
+  approvedAt: true,
+  rejectedAt: true,
+  tokenVersion: true,
+  timezone: true,
+  lastLoginAt: true,
+  mustChangePassword: true,
+} as const;
 
 function newRefreshToken() { return randomBytes(48).toString('base64url'); }
 function refreshHash(token: string) { return createHmac('sha256', process.env.JWT_SECRET ?? '').update(token).digest('hex'); }
 function expiryDate() { const date = new Date(); date.setUTCDate(date.getUTCDate() + getSecurityConfig().refreshTokenDays); return date; }
-function publicUser(user: { id: string; name: string; email: string; role: 'ADMIN' | 'ANALYST' | 'VIEWER'; active: boolean; approvedAt: Date | null; timezone: string; lastLoginAt: Date | null }) {
-  return { id: user.id, name: user.name, email: user.email, role: user.role, active: user.active, approvedAt: user.approvedAt, timezone: user.timezone, lastLoginAt: user.lastLoginAt };
+function publicUser(user: { id: string; name: string; email: string; role: 'ADMIN' | 'ANALYST' | 'VIEWER'; active: boolean; approvedAt: Date | null; timezone: string; lastLoginAt: Date | null; mustChangePassword?: boolean }) {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    active: user.active,
+    approvedAt: user.approvedAt,
+    timezone: user.timezone,
+    lastLoginAt: user.lastLoginAt,
+    mustChangePassword: Boolean(user.mustChangePassword),
+  };
 }
 function accessToken(userId: string, tokenVersion: number, sessionId: string) {
   return jwt.sign({ version: tokenVersion, sessionId }, process.env.JWT_SECRET!, { subject: userId, expiresIn: `${getSecurityConfig().accessTokenMinutes}m` });

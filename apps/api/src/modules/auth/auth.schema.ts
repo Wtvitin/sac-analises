@@ -16,3 +16,16 @@ export const profileNameSchema = z.object({ name: z.string().max(120).transform(
 export const changePasswordSchema = z.object({ currentPassword: z.string().min(8).max(128), newPassword: strongPassword, confirmPassword: z.string().max(128) })
   .refine(input => input.newPassword === input.confirmPassword, { path: ['confirmPassword'], message: 'As senhas não coincidem.' })
   .refine(input => input.newPassword !== input.currentPassword, { path: ['newPassword'], message: 'A nova senha deve ser diferente da atual.' });
+
+export const forgotPasswordSchema = z.object({
+  email: z.string().max(254).pipe(z.email()).transform(normalizeEmail),
+});
+
+export const resetPasswordSchema = z.object({
+  token: z.string().min(16).max(256),
+  newPassword: strongPassword,
+  confirmPassword: z.string().max(128),
+}).refine(input => input.newPassword === input.confirmPassword, {
+  path: ['confirmPassword'],
+  message: 'As senhas não coincidem.',
+});

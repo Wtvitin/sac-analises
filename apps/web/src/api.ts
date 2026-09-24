@@ -1,5 +1,5 @@
 export const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3333';
-export type AuthUser = { id: string; name: string; email: string; role: 'ADMIN' | 'ANALYST' | 'VIEWER'; active: boolean; approvedAt: string | null; timezone: string; lastLoginAt: string | null };
+export type AuthUser = { id: string; name: string; email: string; role: 'ADMIN' | 'ANALYST' | 'VIEWER'; active: boolean; approvedAt: string | null; timezone: string; lastLoginAt: string | null; mustChangePassword?: boolean };
 
 const safeMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
 let refreshPromise: Promise<void> | null = null;

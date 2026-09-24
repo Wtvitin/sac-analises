@@ -15,7 +15,7 @@ import {
 import { App } from './App';
 import { apiRequest, setSessionExpiredHandler, type AuthUser } from './api';
 
-type AuthMode = 'login' | 'register';
+type AuthMode = 'login' | 'register' | 'forgot-password';
 type Feedback = { kind: 'error' | 'info' | 'success'; title?: string; text: string };
 type LoginErrors = Partial<Record<'name' | 'email' | 'password' | 'confirm', string>>;
 
@@ -37,6 +37,16 @@ function validateLogin(email: string, password: string): LoginErrors {
 export function AuthGateway() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [checking, setChecking] = useState(true);
+  const [resetToken, setResetToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    const searchParams = new URLSearchParams(window.location.search);
+    const token = searchParams.get('token');
+    const action = searchParams.get('action');
+    if (token && action === 'reset-password') {
+      setResetToken(token);
+    }
+  }, []);
 
   useEffect(() => {
     setSessionExpiredHandler(() => setUser(null));
@@ -50,7 +60,17 @@ export function AuthGateway() {
   const logout = async () => { try { await apiRequest('/auth/logout', { method: 'POST' }); } finally { setUser(null); } };
 
   if (checking) return <div className="app-loading"><span /><p>Carregando ambiente seguro...</p></div>;
-  return user ? <App user={user} onUserChange={setUser} onLogout={logout} /> : <AuthScreen onAuthenticated={setUser} />;
+  if (resetToken) {
+    return <ResetPasswordView token={resetToken} onComplete={() => {
+      setResetToken(null);
+      window.history.replaceState({}, '', window.location.pathname);
+    }} />;
+  }
+  if (!user) return <AuthScreen onAuthenticated={setUser} />;
+  if (user.mustChangePassword) {
+    return <FirstAccessPasswordChange user={user} onLogout={logout} />;
+  }
+  return <App user={user} onUserChange={setUser} onLogout={logout} />;
 }
 
 function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => void }) {
@@ -88,6 +108,12 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
         setFeedback({ kind: 'error', text: 'Revise os campos destacados antes de continuar.' });
         return;
       }
+    } else if (mode === 'forgot-password') {
+      if (!form.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) {
+        setErrors({ email: 'Informe um e-mail corporativo válido.' });
+        setFeedback({ kind: 'error', text: 'Informe um e-mail válido para recuperação.' });
+        return;
+      }
     } else {
       const nextErrors: LoginErrors = {};
       if (form.name.trim().length < 3) nextErrors.name = 'Informe seu nome completo.';
@@ -106,6 +132,12 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
           body: JSON.stringify({ email: form.email.trim(), password: form.password }),
         });
         onAuthenticated(result.user);
+      } else if (mode === 'forgot-password') {
+        const result = await apiRequest<{ message: string }>('/auth/forgot-password', {
+          method: 'POST',
+          body: JSON.stringify({ email: form.email.trim() }),
+        });
+        setFeedback({ kind: 'success', title: 'Solicitação processada', text: result.message });
       } else {
         const result = await apiRequest<{ message: string }>('/auth/register', {
           method: 'POST',
@@ -150,9 +182,9 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
         <strong className="auth-mobile-wordmark">SAC <em>Análises</em></strong>
         <form className="auth-card" onSubmit={submit} noValidate>
           <header>
-            <span className="auth-card-icon"><FileCheck2 aria-hidden="true" /></span>
-            <h2>{mode === 'login' ? 'Acesse sua conta' : 'Solicitar acesso'}</h2>
-            <p>{mode === 'login' ? 'Entre com seus dados corporativos.' : 'Envie seus dados para análise de um administrador.'}</p>
+            <span className="auth-card-icon">{mode === 'forgot-password' ? <Mail aria-hidden="true" /> : <FileCheck2 aria-hidden="true" />}</span>
+            <h2>{mode === 'login' ? 'Acesse sua conta' : mode === 'forgot-password' ? 'Recuperação de senha' : 'Solicitar acesso'}</h2>
+            <p>{mode === 'login' ? 'Entre com seus dados corporativos.' : mode === 'forgot-password' ? 'Informe seu e-mail para receber as instruções de redefinição.' : 'Envie seus dados para análise de um administrador.'}</p>
           </header>
 
           {mode === 'register' && (
@@ -187,29 +219,31 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
             {errors.email && <small id="auth-email-error" className="auth-field-error"><CircleAlert aria-hidden="true" />{errors.email}</small>}
           </label>
 
-          <label className="auth-field" htmlFor="auth-password">
-            <span>Senha</span>
-            <div className={`${form.password ? 'is-filled ' : ''}${errors.password ? 'is-invalid' : ''}`}>
-              <LockKeyhole aria-hidden="true" />
-              <input
-                id="auth-password"
-                required
-                minLength={mode === 'login' ? 8 : 12}
-                type={showPassword ? 'text' : 'password'}
-                value={form.password}
-                onChange={event => updateField('password', event.target.value)}
-                onBlur={() => mode === 'login' && validateField('password')}
-                placeholder="Digite sua senha"
-                autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-                aria-invalid={Boolean(errors.password)}
-                aria-describedby={errors.password ? 'auth-password-error' : undefined}
-              />
-              <button type="button" className="auth-password-toggle" aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'} aria-pressed={showPassword} onClick={() => setShowPassword(current => !current)}>
-                {showPassword ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
-              </button>
-            </div>
-            {errors.password && <small id="auth-password-error" className="auth-field-error"><CircleAlert aria-hidden="true" />{errors.password}</small>}
-          </label>
+          {mode !== 'forgot-password' && (
+            <label className="auth-field" htmlFor="auth-password">
+              <span>Senha</span>
+              <div className={`${form.password ? 'is-filled ' : ''}${errors.password ? 'is-invalid' : ''}`}>
+                <LockKeyhole aria-hidden="true" />
+                <input
+                  id="auth-password"
+                  required
+                  minLength={mode === 'login' ? 8 : 12}
+                  type={showPassword ? 'text' : 'password'}
+                  value={form.password}
+                  onChange={event => updateField('password', event.target.value)}
+                  onBlur={() => mode === 'login' && validateField('password')}
+                  placeholder="Digite sua senha"
+                  autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                  aria-invalid={Boolean(errors.password)}
+                  aria-describedby={errors.password ? 'auth-password-error' : undefined}
+                />
+                <button type="button" className="auth-password-toggle" aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'} aria-pressed={showPassword} onClick={() => setShowPassword(current => !current)}>
+                  {showPassword ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+                </button>
+              </div>
+              {errors.password && <small id="auth-password-error" className="auth-field-error"><CircleAlert aria-hidden="true" />{errors.password}</small>}
+            </label>
+          )}
 
           {mode === 'register' && (
             <label className="auth-field" htmlFor="auth-confirm">
@@ -225,8 +259,9 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
           {mode === 'login' && (
             <div className="auth-options">
               <span>Esta sessão usa cookies protegidos.</span>
-              <button type="button" disabled aria-describedby="password-recovery-unavailable">Recuperação por e-mail indisponível</button>
-              <span id="password-recovery-unavailable" className="sr-only">Solicite a redefinição ao administrador do sistema.</span>
+              <button type="button" onClick={() => changeMode('forgot-password')} className="auth-forgot-link">
+                Esqueci minha senha
+              </button>
             </div>
           )}
 
@@ -236,12 +271,18 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
 
           <button className="primary auth-submit" disabled={loading} aria-busy={loading}>
             {loading && <LoaderCircle className="auth-spinner" aria-hidden="true" />}
-            {loading ? (mode === 'login' ? 'Entrando...' : 'Enviando...') : mode === 'login' ? 'Entrar' : 'Enviar solicitação'}
+            {loading ? (mode === 'login' ? 'Entrando...' : mode === 'forgot-password' ? 'Enviando link...' : 'Enviando...') : (mode === 'login' ? 'Entrar' : mode === 'forgot-password' ? 'Enviar link de recuperação' : 'Enviar solicitação')}
           </button>
 
           {mode === 'login' && <p className="auth-help">Problemas para acessar? Fale com o administrador.</p>}
           <footer>
-            {mode === 'register' ? <>Já possui uma conta? <button type="button" onClick={() => changeMode('login')}>Voltar ao login</button></> : <>Ainda não possui acesso? <button type="button" onClick={() => changeMode('register')}>Solicitar acesso</button></>}
+            {mode === 'register' ? (
+              <>Já possui uma conta? <button type="button" onClick={() => changeMode('login')}>Voltar ao login</button></>
+            ) : mode === 'forgot-password' ? (
+              <>Lembrou sua senha? <button type="button" onClick={() => changeMode('login')}>Voltar ao login</button></>
+            ) : (
+              <>Ainda não possui acesso? <button type="button" onClick={() => changeMode('register')}>Solicitar acesso</button></>
+            )}
             <span className="auth-secure"><ShieldCheck aria-hidden="true" />Ambiente interno e seguro</span>
           </footer>
         </form>
@@ -249,3 +290,314 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
     </main>
   );
 }
+
+function FirstAccessPasswordChange({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState(false);
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (loading) return;
+    setError('');
+
+    if (!currentPassword) {
+      setError('Informe a senha provisória recebida.');
+      return;
+    }
+    if (newPassword.length < 12) {
+      setError('A nova senha deve ter pelo menos 12 caracteres.');
+      return;
+    }
+    if (!/[A-Z]/.test(newPassword) || !/[a-z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
+      setError('A nova senha deve conter letras maiúsculas, minúsculas e números.');
+      return;
+    }
+    if (newPassword === currentPassword) {
+      setError('A nova senha deve ser diferente da senha provisória.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError('As senhas não coincidem.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await apiRequest('/auth/change-password', {
+        method: 'POST',
+        body: JSON.stringify({ currentPassword, newPassword, confirmPassword }),
+      });
+      setSuccess(true);
+    } catch (err: any) {
+      setError(err instanceof Error ? err.message : 'Não foi possível cadastrar a nova senha.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <main className="auth-page">
+      <section className="auth-brand" aria-label="SAC Análises">
+        <div className="auth-shape auth-shape-one" aria-hidden="true" />
+        <div className="auth-shape auth-shape-two" aria-hidden="true" />
+        <strong className="auth-wordmark">SAC <em>Análises</em></strong>
+        <div className="auth-brand-content">
+          <h1>Primeiro Acesso Seguro</h1>
+          <p>Defina sua senha definitiva para desbloquear o acesso completo ao SAC Análises.</p>
+        </div>
+      </section>
+
+      <section className="auth-panel" aria-label="Defina sua nova senha">
+        <div className="auth-head">
+          <div className="auth-badge"><ShieldCheck aria-hidden="true" />Primeiro acesso obrigatório</div>
+          <h2>Defina sua nova senha</h2>
+          <p>Olá, <strong>{user.name}</strong>. Para sua segurança, substitua a senha provisória por uma nova senha pessoal definitiva.</p>
+        </div>
+
+        {success ? (
+          <div className="auth-feedback" style={{ marginTop: '20px' }}>
+            <div className="auth-message auth-message-success" role="status">
+              <strong>Senha cadastrada com sucesso!</strong>
+              <p>A senha provisória foi invalidada e as sessões anteriores foram revogadas. Acesse sua conta com a nova senha permanente.</p>
+            </div>
+            <button type="button" className="primary auth-submit" style={{ marginTop: '20px' }} onClick={onLogout}>
+              Acessar com a nova senha
+            </button>
+          </div>
+        ) : (
+          <form className="auth-form" onSubmit={handleSubmit} noValidate>
+            <label className="auth-field" htmlFor="provisional-password">
+              <span>Senha provisória recebida</span>
+              <div className={currentPassword ? 'is-filled' : ''}>
+                <LockKeyhole aria-hidden="true" />
+                <input
+                  id="provisional-password"
+                  required
+                  type={showPassword ? 'text' : 'password'}
+                  value={currentPassword}
+                  onChange={e => setCurrentPassword(e.target.value)}
+                  placeholder="Digite a senha provisória"
+                  autoComplete="current-password"
+                />
+              </div>
+            </label>
+
+            <label className="auth-field" htmlFor="new-password">
+              <span>Nova senha definitiva</span>
+              <div className={newPassword ? 'is-filled' : ''}>
+                <LockKeyhole aria-hidden="true" />
+                <input
+                  id="new-password"
+                  required
+                  minLength={12}
+                  maxLength={128}
+                  type={showPassword ? 'text' : 'password'}
+                  value={newPassword}
+                  onChange={e => setNewPassword(e.target.value)}
+                  placeholder="Mínimo 12 caracteres (A-Z, a-z, 0-9)"
+                  autoComplete="new-password"
+                />
+                <button
+                  type="button"
+                  className="auth-password-toggle"
+                  aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                  onClick={() => setShowPassword(!showPassword)}
+                >
+                  {showPassword ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+                </button>
+              </div>
+            </label>
+
+            <label className="auth-field" htmlFor="confirm-new-password">
+              <span>Confirmar nova senha</span>
+              <div className={confirmPassword ? 'is-filled' : ''}>
+                <LockKeyhole aria-hidden="true" />
+                <input
+                  id="confirm-new-password"
+                  required
+                  minLength={12}
+                  maxLength={128}
+                  type={showPassword ? 'text' : 'password'}
+                  value={confirmPassword}
+                  onChange={e => setConfirmPassword(e.target.value)}
+                  placeholder="Repita a nova senha"
+                  autoComplete="new-password"
+                />
+              </div>
+            </label>
+
+            <div className="auth-feedback" aria-live="polite">
+              {error && (
+                <p className="auth-message auth-message-error" role="alert">
+                  <CircleAlert aria-hidden="true" />
+                  {error}
+                </p>
+              )}
+            </div>
+
+            <button className="primary auth-submit" disabled={loading} aria-busy={loading}>
+              {loading && <LoaderCircle className="auth-spinner" aria-hidden="true" />}
+              {loading ? 'Salvando...' : 'Salvar nova senha e continuar'}
+            </button>
+
+            <footer style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '16px' }}>
+              <button type="button" className="secondary" onClick={onLogout} style={{ border: 'none', background: 'none', color: 'var(--color-muted)', cursor: 'pointer' }}>
+                Cancelar e sair
+              </button>
+              <span className="auth-secure"><ShieldCheck aria-hidden="true" />Ambiente seguro</span>
+            </footer>
+          </form>
+        )}
+      </section>
+    </main>
+  );
+}
+
+function ResetPasswordView({ token, onComplete }: { token: string; onComplete: () => void }) {
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState(false);
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (loading) return;
+    setError('');
+
+    if (newPassword.length < 12) {
+      setError('A nova senha deve ter pelo menos 12 caracteres.');
+      return;
+    }
+    if (!/[A-Z]/.test(newPassword) || !/[a-z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
+      setError('A nova senha deve conter letras maiúsculas, minúsculas e números.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError('As senhas não coincidem.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await apiRequest('/auth/reset-password', {
+        method: 'POST',
+        body: JSON.stringify({ token, newPassword, confirmPassword }),
+      });
+      setSuccess(true);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Não foi possível redefinir a senha.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <main className="auth-page">
+      <section className="auth-brand" aria-label="SAC Análises">
+        <div className="auth-shape auth-shape-one" aria-hidden="true" />
+        <div className="auth-shape auth-shape-two" aria-hidden="true" />
+        <strong className="auth-wordmark">SAC <em>Análises</em></strong>
+        <div className="auth-brand-content">
+          <h1>Recuperação de Senha</h1>
+          <p>Defina uma nova senha segura para reativar seu acesso ao SAC Análises.</p>
+        </div>
+      </section>
+
+      <section className="auth-panel" aria-label="Redefinir senha">
+        <div className="auth-card">
+          <header>
+            <span className="auth-card-icon"><LockKeyhole aria-hidden="true" /></span>
+            <h2>Defina sua nova senha</h2>
+            <p>Crie uma senha forte com no mínimo 12 caracteres.</p>
+          </header>
+
+          {success ? (
+            <div style={{ textAlign: 'center', padding: '16px 0' }}>
+              <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: '8px', padding: '16px', color: '#065f46', marginBottom: '20px' }}>
+                <p style={{ margin: 0, fontWeight: 'bold' }}>Senha redefinida com sucesso!</p>
+                <p style={{ margin: '6px 0 0', fontSize: '13px' }}>Você já pode fazer login com sua nova credencial.</p>
+              </div>
+              <button type="button" className="primary auth-submit" onClick={onComplete}>
+                Ir para o login
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={handleSubmit} noValidate>
+              <label className="auth-field" htmlFor="reset-new-password">
+                <span>Nova senha</span>
+                <div className={newPassword ? 'is-filled' : ''}>
+                  <LockKeyhole aria-hidden="true" />
+                  <input
+                    id="reset-new-password"
+                    required
+                    minLength={12}
+                    maxLength={128}
+                    type={showPassword ? 'text' : 'password'}
+                    value={newPassword}
+                    onChange={event => setNewPassword(event.target.value)}
+                    placeholder="Mínimo 12 caracteres (A-Z, a-z, 0-9)"
+                    autoComplete="new-password"
+                  />
+                  <button
+                    type="button"
+                    className="auth-password-toggle"
+                    aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                    onClick={() => setShowPassword(current => !current)}
+                  >
+                    {showPassword ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+                  </button>
+                </div>
+              </label>
+
+              <label className="auth-field" htmlFor="reset-confirm-password">
+                <span>Confirmar nova senha</span>
+                <div className={confirmPassword ? 'is-filled' : ''}>
+                  <LockKeyhole aria-hidden="true" />
+                  <input
+                    id="reset-confirm-password"
+                    required
+                    minLength={12}
+                    maxLength={128}
+                    type={showPassword ? 'text' : 'password'}
+                    value={confirmPassword}
+                    onChange={event => setConfirmPassword(event.target.value)}
+                    placeholder="Repita a nova senha"
+                    autoComplete="new-password"
+                  />
+                </div>
+              </label>
+
+              {error && (
+                <div className="auth-feedback">
+                  <p className="auth-message auth-message-error" role="alert">
+                    <CircleAlert aria-hidden="true" />
+                    {error}
+                  </p>
+                </div>
+              )}
+
+              <button className="primary auth-submit" disabled={loading} aria-busy={loading}>
+                {loading && <LoaderCircle className="auth-spinner" aria-hidden="true" />}
+                {loading ? 'Salvando...' : 'Salvar nova senha'}
+              </button>
+
+              <footer style={{ marginTop: '16px', textAlign: 'center' }}>
+                <button type="button" onClick={onComplete} style={{ border: 'none', background: 'none', color: 'var(--color-brand)', cursor: 'pointer', fontSize: '13px' }}>
+                  Cancelar e voltar ao login
+                </button>
+              </footer>
+            </form>
+          )}
+        </div>
+      </section>
+    </main>
+  );
+}
+

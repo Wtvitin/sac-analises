@@ -10,6 +10,12 @@ export const listUsersSchema = z.object({
 });
 export const approveUserSchema = z.object({ role: z.enum(['ANALYST', 'VIEWER']) });
 export const rejectUserSchema = z.object({ justification });
-export const changeRoleSchema = z.object({ role: z.enum(['ADMIN', 'ANALYST', 'VIEWER']), justification: z.string().trim().max(500).optional() });
+export const changeRoleSchema = z.object({ role: z.enum(['ANALYST', 'VIEWER']), justification: z.string().trim().max(500).optional() });
 export const deactivateUserSchema = z.object({ justification, strategy: z.enum(['transfer', 'unassigned']).optional(), transferToUserId: z.string().trim().min(1).max(80).optional(), confirmUnassigned: z.boolean().optional() });
 export const reactivateUserSchema = z.object({ justification });
+export const createUserSchema = z.object({
+  name: z.string().trim().min(3, 'O nome deve ter pelo menos 3 caracteres.').max(120),
+  email: z.string().trim().email('E-mail inválido.').max(254),
+  role: z.enum(['ANALYST', 'VIEWER']),
+});
+

@@ -59,6 +59,9 @@ enum AdminAuditType {
   ALL_SESSIONS_REVOKED
   SESSION_REUSE_DETECTED
   SENSITIVE_DATA_REVEALED
+  PROVISIONAL_PASSWORD_GENERATED
+  PROVISIONAL_PASSWORD_RESENT
+  PASSWORD_RESET_REQUESTED
 }
 
 enum SacReferenceType {
@@ -77,6 +80,12 @@ model User {
   name          String
   email         String        @unique
   passwordHash  String
+  mustChangePassword           Boolean       @default(false)
+  provisionalPasswordHash      String?
+  provisionalPasswordCreatedAt DateTime?
+  provisionalPasswordExpiresAt DateTime?
+  passwordResetTokenHash       String?
+  passwordResetExpiresAt       DateTime?
   role          UserRole      @default(ANALYST)
   active        Boolean       @default(true)
   approvedAt    DateTime?
