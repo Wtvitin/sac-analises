@@ -18,6 +18,9 @@ const mockPrisma = vi.hoisted(() => ({
     findFirst: vi.fn(),
     findMany: vi.fn(),
   },
+  adminAudit: {
+    create: vi.fn(),
+  },
 }));
 
 const mockStorage = vi.hoisted(() => ({
@@ -43,6 +46,7 @@ vi.mock('node:fs/promises', () => ({
   mkdir: vi.fn().mockResolvedValue(undefined),
   writeFile: vi.fn().mockResolvedValue(undefined),
   unlink: vi.fn().mockResolvedValue(undefined),
+  stat: vi.fn().mockResolvedValue({ size: 1024 }),
 }));
 
 vi.mock('../auth/auth.middleware.js', () => ({
@@ -61,6 +65,10 @@ vi.mock('../auth/auth.middleware.js', () => ({
       return next();
     }
     return res.status(401).json({ error: { code: 'UNAUTHENTICATED', message: 'Sessão inválida.' } });
+  },
+  requireRole: (...roles: string[]) => (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (req.auth && roles.includes(req.auth.role)) return next();
+    return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Você não tem permissão para esta ação.' } });
   },
   requirePermission: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
 }));
@@ -305,4 +313,64 @@ describe('Document Imports API Routes', () => {
       expect(mockStorage.remove).not.toHaveBeenCalled();
     });
   });
+
+  describe('POST /document-imports/:id/reveal', () => {
+    it('blocks non-admin users with 403 Forbidden', async () => {
+      const res = await request('/document-imports/session-user-1/reveal', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer user-1-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ fieldPath: 'additionalInfo.0' }),
+      });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('allows ADMIN to reveal sensitive field and logs audit without storing value', async () => {
+      mockPrisma.documentImport.findUnique.mockResolvedValue({
+        id: 'session-user-1',
+        userId: 'user-1',
+        originalName: 'form.pdf',
+        format: 'PDF',
+        status: 'READY_FOR_REVIEW',
+        extractedData: {
+          additionalInfo: [
+            { label: 'CPF', value: '123.456.789-00', category: 'SENSITIVE', confidence: 'IDENTIFIED' },
+          ],
+        },
+        error: null,
+        expiresAt: new Date(Date.now() + 3600000),
+        createdAt: new Date(),
+      });
+      mockPrisma.adminAudit.create.mockResolvedValue({});
+
+      const res = await request('/document-imports/session-user-1/reveal', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer admin-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ fieldPath: 'additionalInfo.0' }),
+      });
+
+      expect(res.status).toBe(200);
+      const json = await res.json() as any;
+      expect(json.data.fieldPath).toBe('additionalInfo.0');
+      expect(json.data.revealedValue).toBe('123.456.789-00');
+      expect(json.data.category).toBe('CPF_CNPJ');
+
+      // Verify audit was created and DOES NOT contain the sensitive value
+      expect(mockPrisma.adminAudit.create).toHaveBeenCalledTimes(1);
+      const auditCall = mockPrisma.adminAudit.create.mock.calls[0][0];
+      expect(auditCall.data.type).toBe('SENSITIVE_DATA_REVEALED');
+      expect(auditCall.data.actorId).toBe('admin-1');
+      expect(auditCall.data.metadata.category).toBe('CPF_CNPJ');
+      expect(auditCall.data.metadata.fieldPath).toBe('additionalInfo.0');
+      // Assert sensitive value is NEVER stored in audit
+      expect(JSON.stringify(auditCall.data)).not.toContain('123.456.789-00');
+    });
+  });
 });
+

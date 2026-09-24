@@ -58,6 +58,18 @@ enum AdminAuditType {
   LOGIN_SUCCEEDED
   ALL_SESSIONS_REVOKED
   SESSION_REUSE_DETECTED
+  SENSITIVE_DATA_REVEALED
+}
+
+enum SacReferenceType {
+  ORDER
+  INVOICE
+  SERVICE_ORDER
+  PROTOCOL
+  ATTENDANCE
+  CUSTOMER_CODE
+  INTERNAL_DOC
+  OTHER
 }
 
 model User {
@@ -115,7 +127,7 @@ model TicketCounter {
 model SacRecord {
   id               String        @id @default(cuid())
   ticket           String        @unique
-  orderNumber      String
+  orderNumber      String?
   externalTicket   String?
   idempotencyKey   String?       @unique
   description      String
@@ -144,6 +156,7 @@ model SacRecord {
   assignee         User?         @relation("Assignee", fields: [assigneeId], references: [id])
   createdById      String
   createdBy        User          @relation("Creator", fields: [createdById], references: [id])
+  references       SacReference[]
   items            SacItem[]
   comments         Comment[]
   attachments      Attachment[]
@@ -164,6 +177,19 @@ model SacRecord {
   @@index([openedAt])
   @@index([dueAt])
   @@index([status, lastOperationalActivityAt])
+}
+
+model SacReference {
+  id        String           @id @default(cuid())
+  recordId  String
+  record    SacRecord        @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  type      SacReferenceType
+  value     String
+  note      String?
+  createdAt DateTime         @default(now())
+
+  @@index([recordId])
+  @@index([type, value])
 }
 
 model SacItem {

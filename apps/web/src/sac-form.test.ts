@@ -18,7 +18,30 @@ describe('SAC creation and editing form helpers', () => {
     expect(validateSacForm(validForm())).toEqual({});
     expect(validateSacForm({ ...validForm(), dueDate: '2026-09-13' })).toMatchObject({ dueDate: expect.any(String) });
     expect(validateSacForm({ ...validForm(), items: [{ ...validForm().items[0], quantity: '0' }] })).toMatchObject({ 'item-0': expect.any(String) });
-    expect(validateSacForm(createEmptySacForm())).toMatchObject({ customerName: expect.any(String), orderNumber: expect.any(String), channelId: expect.any(String), reasonId: expect.any(String), priority: expect.any(String) });
+    expect(validateSacForm(createEmptySacForm())).toMatchObject({ customerName: expect.any(String), channelId: expect.any(String), reasonId: expect.any(String), priority: expect.any(String) });
+  });
+
+  it('allows cases without orderNumber and validates multisector references', () => {
+    const formWithoutOrder: SacFormValues = {
+      ...validForm(),
+      orderNumber: '',
+      references: [
+        { key: 'ref-1', type: 'INVOICE', value: 'NF-100200', note: 'Nota fiscal' },
+        { key: 'ref-2', type: 'SERVICE_ORDER', value: 'OS-8899', note: 'Ordem de serviço' },
+      ],
+    };
+    expect(validateSacForm(formWithoutOrder)).toEqual({});
+
+    // Reference with empty value should fail validation
+    const invalidRefForm: SacFormValues = {
+      ...formWithoutOrder,
+      references: [{ key: 'ref-1', type: 'INVOICE', value: '   ' }],
+    };
+    expect(validateSacForm(invalidRefForm)).toMatchObject({ 'reference-0': expect.any(String) });
+
+    const payload = sacFormPayload(formWithoutOrder, false);
+    expect(payload.references).toHaveLength(2);
+    expect(payload.references[0]).toEqual({ type: 'INVOICE', value: 'NF-100200', note: 'Nota fiscal' });
   });
 
   it('builds the API payload without leaking local item keys and keeps edit concurrency data', () => {

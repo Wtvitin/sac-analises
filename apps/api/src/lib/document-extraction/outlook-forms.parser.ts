@@ -230,13 +230,12 @@ export function parseOutlookFormsDocument(raw: RawDocumentText): InterpretedForm
     };
   }
 
-  // 5. Order Number - Strictly empty because Forms does not have Order Number
+  // 5. Order Number - Strictly empty because Forms does not have Order Number (references used instead)
   const orderNumber: CandidateField = {
     value: '',
     confidence: 'UNIDENTIFIED',
     confidenceLevel: 'LOW',
-    requiresReview: true,
-    warning: 'Número do pedido não informado no formulário (apenas Nota Fiscal). Preencha caso exista.',
+    requiresReview: false,
   };
 
   // 6. External Ticket - Strictly empty (never extract fragments from email headers)
@@ -400,6 +399,31 @@ export function parseOutlookFormsDocument(raw: RawDocumentText): InterpretedForm
     };
   }
 
+  const candidateReferences: Array<{
+    type: 'ORDER' | 'INVOICE' | 'SERVICE_ORDER' | 'PROTOCOL' | 'ATTENDANCE' | 'CUSTOMER_CODE' | 'INTERNAL_DOC' | 'OTHER';
+    value: string;
+    label: string;
+    confidence: 'IDENTIFIED' | 'REVIEW_REQUIRED' | 'UNIDENTIFIED';
+  }> = [];
+
+  if (cleanInvoice) {
+    candidateReferences.push({
+      type: 'INVOICE',
+      value: cleanInvoice,
+      label: 'Nota fiscal',
+      confidence: 'IDENTIFIED',
+    });
+  }
+
+  if (parsedSections.customerCode?.value) {
+    candidateReferences.push({
+      type: 'CUSTOMER_CODE',
+      value: parsedSections.customerCode.value,
+      label: 'Código do cliente',
+      confidence: 'IDENTIFIED',
+    });
+  }
+
   return {
     modelId: 'OUTLOOK_MS_FORMS',
     modelName: 'Formulário Outlook / Microsoft Forms',
@@ -414,6 +438,7 @@ export function parseOutlookFormsDocument(raw: RawDocumentText): InterpretedForm
     internalNote,
     items,
     invoiceNumber,
+    candidateReferences,
     additionalInfo,
     referencedFiles,
     occurrenceReasonText: parsedSections.occurrenceReason?.value,

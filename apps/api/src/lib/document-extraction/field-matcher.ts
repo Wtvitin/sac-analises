@@ -205,6 +205,14 @@ export async function matchAndScoreFields(
     suggestedReason: ensureOptionalCandidate(suggestedReason),
     suggestedSubreason: ensureOptionalCandidate(suggestedSubreason),
     invoiceNumber: ensureOptionalCandidate(interpreted?.invoiceNumber),
+    candidateReferences: interpreted?.candidateReferences || (
+      interpreted?.invoiceNumber?.value ? [{
+        type: 'INVOICE' as const,
+        value: interpreted.invoiceNumber.value,
+        label: 'Nota fiscal',
+        confidence: interpreted.invoiceNumber.confidence,
+      }] : []
+    ),
     items: (interpreted?.items || []).map(it => ({
       ...it,
       confidenceLevel: it?.confidenceLevel || (it?.confidence === 'IDENTIFIED' ? 'HIGH' : 'MEDIUM'),

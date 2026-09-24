@@ -7,6 +7,7 @@ import { classifyOperationalAttention, operationalBoundaries } from '../../domai
 import { normalizeCatalogName } from '../catalog/catalog.schema.js';
 import { createCaseNotification } from '../notifications/notification.service.js';
 import { confirmDocumentImport } from '../document-imports/document-import.service.js';
+import { logSensitiveDataRevealAudit, maskCpfCnpj, type SensitiveCategory } from '../../lib/privacy/privacy.service.js';
 import type { assignmentSchema, changeStatusSchema, commentSchema, createSacRecordSchema, dueDateChangeSchema, historyQuerySchema, listSacRecordsSchema, priorityChangeSchema, takeCaseSchema, updateSacRecordSchema } from './sac.schema.js';
 
 type ListInput = z.infer<typeof listSacRecordsSchema>;
@@ -31,6 +32,7 @@ const recordInclude = {
   subreason: true,
   channelCatalog: true,
   assignee: { select: { id: true, name: true, active: true } },
+  references: { orderBy: { createdAt: 'asc' as const } },
   items: { orderBy: { createdAt: 'asc' as const } },
   attachments: {
     orderBy: { createdAt: 'asc' as const },
@@ -39,6 +41,24 @@ const recordInclude = {
   comments: { orderBy: { createdAt: 'desc' as const }, take: 20, include: { author: { select: { id: true, name: true } } } },
   activities: { orderBy: { createdAt: 'desc' as const }, take: 20, include: { actor: { select: { id: true, name: true } } } },
 } satisfies Prisma.SacRecordInclude;
+
+export type MaskedCustomerRecord<T> = T extends { customer: infer C }
+  ? Omit<T, 'customer'> & { customer: C extends object ? C & { isDocumentMasked?: boolean } : C }
+  : T;
+
+export function maskRecordSensitiveData<T extends { customer?: { document?: string | null; [key: string]: any } | null }>(
+  record: T
+): MaskedCustomerRecord<T> {
+  if (!record || !record.customer || !record.customer.document) return record as MaskedCustomerRecord<T>;
+  return {
+    ...record,
+    customer: {
+      ...record.customer,
+      document: maskCpfCnpj(record.customer.document),
+      isDocumentMasked: true,
+    },
+  } as MaskedCustomerRecord<T>;
+}
 
 function errorCode(error: unknown) { return error && typeof error === 'object' && 'code' in error ? String(error.code) : ''; }
 function serializeDate(value: Date) { return value.toISOString(); }
@@ -153,6 +173,7 @@ export async function listSacRecords(input: ListInput, now = new Date()) {
       { ticket: { contains: input.query, mode: 'insensitive' } },
       { externalTicket: { contains: input.query, mode: 'insensitive' } },
       { orderNumber: { contains: input.query, mode: 'insensitive' } },
+      { references: { some: { value: { contains: input.query, mode: 'insensitive' } } } },
       { customer: { name: { contains: input.query, mode: 'insensitive' } } },
       { reason: { name: { contains: input.query, mode: 'insensitive' } } },
     ] } : {}),
@@ -167,7 +188,7 @@ export async function listSacRecords(input: ListInput, now = new Date()) {
     ? [{ dueAt: 'asc' }, { priority: 'desc' }, { openedAt: 'asc' }, { id: 'asc' }]
     : [input.sort === 'customer' ? { customer: { name: input.order } } : { [input.sort]: input.order }, { id: 'asc' }];
   const [foundItems, total, owners, reasons, statusCounts, overdue, dueToday, nearDue, stale, unassigned, attentionTotal] = await prisma.$transaction([
-    prisma.sacRecord.findMany({ where: findWhere, skip: findSkip, take: findTake, orderBy, include: { customer: true, reason: true, subreason: true, assignee: { select: { id: true, name: true } } } }),
+    prisma.sacRecord.findMany({ where: findWhere, skip: findSkip, take: findTake, orderBy, include: { customer: true, reason: true, subreason: true, references: { orderBy: { createdAt: 'asc' } }, assignee: { select: { id: true, name: true } } } }),
     prisma.sacRecord.count({ where }),
     prisma.user.findMany({ where: { assignedCases: { some: { archivedAt: null } } }, select: { name: true }, orderBy: { name: 'asc' } }),
     prisma.reason.findMany({ select: { name: true }, orderBy: { name: 'asc' } }),
@@ -181,14 +202,14 @@ export async function listSacRecords(input: ListInput, now = new Date()) {
   ]);
   const orderedItems = attentionIds ? [...foundItems].sort((left, right) => attentionIds.findIndex(row => row.id === left.id) - attentionIds.findIndex(row => row.id === right.id)) : foundItems;
   const items = orderedItems
-    .map(record => ({ ...record, operational: classifyOperationalAttention(record, now) }));
+    .map(record => maskRecordSensitiveData({ ...record, operational: classifyOperationalAttention(record, now) }));
   return { items, page: input.page, pageSize: input.pageSize, total, serverNow: now, operationalConfig: { timezone: 'America/Sao_Paulo', nearDueDays: 2, staleAfterDays: 3 }, options: { owners: [...new Set(owners.map(owner => owner.name))], reasons: reasons.map(reason => reason.name) }, counts: { ...Object.fromEntries(statusCounts.map(group => [group.status, group._count])), overdue, dueToday, nearDue, stale, unassigned, noDue: 0, attention: attentionTotal } };
 }
 
 export async function getSacRecord(recordId: string) {
   const record = await prisma.sacRecord.findFirst({ where: { id: recordId, archivedAt: null }, include: recordInclude });
   if (!record) throw new SacRecordError('SAC_RECORD_NOT_FOUND', 'Registro não encontrado.', 404);
-  return { ...record, operational: classifyOperationalAttention(record) };
+  return maskRecordSensitiveData({ ...record, operational: classifyOperationalAttention(record) });
 }
 
 export async function checkExternalTicket(value: string, excludeId?: string) {
@@ -205,11 +226,11 @@ export async function searchCustomers(query: string) {
 
 export async function createSacRecord(input: CreateInput, actorId: string, idempotencyKey: string, attachments: StoredAttachment[] = []) {
   const existing = await prisma.sacRecord.findUnique({ where: { idempotencyKey }, include: recordInclude });
-  if (existing) return { record: { ...existing, operational: classifyOperationalAttention(existing) }, created: false };
+  if (existing) return { record: maskRecordSensitiveData({ ...existing, operational: classifyOperationalAttention(existing) }), created: false };
   try {
     const result = await prisma.$transaction(async tx => {
       const replay = await tx.sacRecord.findUnique({ where: { idempotencyKey }, include: recordInclude });
-      if (replay) return { record: { ...replay, operational: classifyOperationalAttention(replay) }, created: false };
+      if (replay) return { record: maskRecordSensitiveData({ ...replay, operational: classifyOperationalAttention(replay) }), created: false };
       const { reason, channel, assignee } = await validateReferences(tx, input);
       await assertExternalTicketDecision(tx, input.externalTicket, input.allowDuplicateExternalTicket);
       const customer = await tx.customer.upsert({ where: { normalizedName: normalizeCatalogName(input.customerName) }, update: {}, create: { name: input.customerName, normalizedName: normalizeCatalogName(input.customerName) } });
@@ -217,13 +238,54 @@ export async function createSacRecord(input: CreateInput, actorId: string, idemp
       const counter = await tx.ticketCounter.upsert({ where: { year }, create: { year, value: 1 }, update: { value: { increment: 1 } } });
       const ticket = `SAC-${year}-${String(counter.value).padStart(4, '0')}`;
       const activityAt = new Date();
+
+      let effectiveOrderNumber = input.orderNumber || null;
+      let effectiveExternalTicket = input.externalTicket || null;
+
+      const referencesToCreate: Array<{
+        type: 'ORDER' | 'INVOICE' | 'SERVICE_ORDER' | 'PROTOCOL' | 'ATTENDANCE' | 'CUSTOMER_CODE' | 'INTERNAL_DOC' | 'OTHER';
+        value: string;
+        note: string | null;
+      }> = [];
+      const seenRefs = new Set<string>();
+
+      if (Array.isArray(input.references)) {
+        for (const ref of input.references) {
+          if (!ref.value) continue;
+          const key = `${ref.type}:${ref.value}`;
+          if (!seenRefs.has(key)) {
+            seenRefs.add(key);
+            referencesToCreate.push({ type: ref.type, value: ref.value, note: ref.note ?? null });
+          }
+          if (ref.type === 'ORDER' && !effectiveOrderNumber) {
+            effectiveOrderNumber = ref.value;
+          }
+          if ((ref.type === 'ATTENDANCE' || ref.type === 'PROTOCOL') && !effectiveExternalTicket) {
+            effectiveExternalTicket = ref.value;
+          }
+        }
+      }
+
+      if (effectiveOrderNumber && !seenRefs.has(`ORDER:${effectiveOrderNumber}`)) {
+        seenRefs.add(`ORDER:${effectiveOrderNumber}`);
+        referencesToCreate.push({ type: 'ORDER', value: effectiveOrderNumber, note: null });
+      }
+
+      if (effectiveExternalTicket && !seenRefs.has(`ATTENDANCE:${effectiveExternalTicket}`) && !seenRefs.has(`PROTOCOL:${effectiveExternalTicket}`)) {
+        seenRefs.add(`ATTENDANCE:${effectiveExternalTicket}`);
+        referencesToCreate.push({ type: 'ATTENDANCE', value: effectiveExternalTicket, note: null });
+      }
+
       const created = await tx.sacRecord.create({
         data: {
-          ticket, idempotencyKey, orderNumber: input.orderNumber, externalTicket: input.externalTicket,
+          ticket, idempotencyKey, orderNumber: effectiveOrderNumber, externalTicket: effectiveExternalTicket,
           description: input.description, internalNote: input.internalNote, identifiedCause: input.identifiedCause,
           responsibleArea: input.responsibleArea, correctiveAction: input.correctiveAction, priority: input.priority,
           channel: channel.name, channelId: channel.id, openedAt: input.openedAt, dueAt: input.dueAt,
           customerId: customer.id, reasonId: reason.id, subreasonId: input.subreasonId, assigneeId: input.assigneeId, createdById: actorId, lastOperationalActivityAt: activityAt,
+          references: referencesToCreate.length ? {
+            create: referencesToCreate.map(r => ({ type: r.type, value: r.value, note: r.note })),
+          } : undefined,
           items: { create: input.items.map(item => ({ code: item.code, description: item.description, batch: item.batch, quantity: item.quantity, note: item.note })) },
           attachments: {
             create: attachments.map(att => ({
@@ -249,14 +311,14 @@ export async function createSacRecord(input: CreateInput, actorId: string, idemp
       });
       await createCaseNotification(tx, { recipientId: input.assigneeId, actorId, recordId: created.id, ticket, type: 'ASSIGNED', title: 'Caso atribuído a você', summary: `${ticket} foi atribuído à sua responsabilidade.`, metadata: { ticket } });
       const record = await tx.sacRecord.findUniqueOrThrow({ where: { id: created.id }, include: recordInclude });
-      return { record: { ...record, operational: classifyOperationalAttention(record) }, created: true };
+      return { record: maskRecordSensitiveData({ ...record, operational: classifyOperationalAttention(record) }), created: true };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
     if (result.created && input.importSessionId) {
       await confirmDocumentImport(input.importSessionId, result.record.id, Boolean(input.preserveImportAsAttachment), actorId);
       const reloaded = await prisma.sacRecord.findUnique({ where: { id: result.record.id }, include: recordInclude });
       if (reloaded) {
-        return { record: { ...reloaded, operational: classifyOperationalAttention(reloaded) }, created: true };
+        return { record: maskRecordSensitiveData({ ...reloaded, operational: classifyOperationalAttention(reloaded) }), created: true };
       }
     }
 
@@ -264,7 +326,7 @@ export async function createSacRecord(input: CreateInput, actorId: string, idemp
   } catch (error) {
     if (errorCode(error) === 'P2002') {
       const replay = await prisma.sacRecord.findUnique({ where: { idempotencyKey }, include: recordInclude });
-      if (replay) return { record: { ...replay, operational: classifyOperationalAttention(replay) }, created: false };
+      if (replay) return { record: maskRecordSensitiveData({ ...replay, operational: classifyOperationalAttention(replay) }), created: false };
     }
     throw error;
   }
@@ -280,10 +342,48 @@ export async function updateSacRecord(recordId: string, input: UpdateInput, acto
     await assertExternalTicketDecision(tx, input.externalTicket, input.allowDuplicateExternalTicket, recordId);
     const customer = await tx.customer.upsert({ where: { normalizedName: normalizeCatalogName(input.customerName) }, update: {}, create: { name: input.customerName, normalizedName: normalizeCatalogName(input.customerName) } });
     const activityAt = new Date();
+
+    let effectiveOrderNumber = input.orderNumber || null;
+    let effectiveExternalTicket = input.externalTicket || null;
+
+    const referencesToCreate: Array<{
+      type: 'ORDER' | 'INVOICE' | 'SERVICE_ORDER' | 'PROTOCOL' | 'ATTENDANCE' | 'CUSTOMER_CODE' | 'INTERNAL_DOC' | 'OTHER';
+      value: string;
+      note: string | null;
+    }> = [];
+    const seenRefs = new Set<string>();
+
+    if (Array.isArray(input.references)) {
+      for (const ref of input.references) {
+        if (!ref.value) continue;
+        const key = `${ref.type}:${ref.value}`;
+        if (!seenRefs.has(key)) {
+          seenRefs.add(key);
+          referencesToCreate.push({ type: ref.type, value: ref.value, note: ref.note ?? null });
+        }
+        if (ref.type === 'ORDER' && !effectiveOrderNumber) {
+          effectiveOrderNumber = ref.value;
+        }
+        if ((ref.type === 'ATTENDANCE' || ref.type === 'PROTOCOL') && !effectiveExternalTicket) {
+          effectiveExternalTicket = ref.value;
+        }
+      }
+    }
+
+    if (effectiveOrderNumber && !seenRefs.has(`ORDER:${effectiveOrderNumber}`)) {
+      seenRefs.add(`ORDER:${effectiveOrderNumber}`);
+      referencesToCreate.push({ type: 'ORDER', value: effectiveOrderNumber, note: null });
+    }
+
+    if (effectiveExternalTicket && !seenRefs.has(`ATTENDANCE:${effectiveExternalTicket}`) && !seenRefs.has(`PROTOCOL:${effectiveExternalTicket}`)) {
+      seenRefs.add(`ATTENDANCE:${effectiveExternalTicket}`);
+      referencesToCreate.push({ type: 'ATTENDANCE', value: effectiveExternalTicket, note: null });
+    }
+
     const updated = await tx.sacRecord.updateMany({
       where: { id: recordId, updatedAt: input.updatedAt },
       data: {
-        orderNumber: input.orderNumber, externalTicket: input.externalTicket, description: input.description, internalNote: input.internalNote,
+        orderNumber: effectiveOrderNumber, externalTicket: effectiveExternalTicket, description: input.description, internalNote: input.internalNote,
         identifiedCause: input.identifiedCause, responsibleArea: input.responsibleArea, correctiveAction: input.correctiveAction,
         channel: references.channel.name, channelId: input.channelId, openedAt: input.openedAt,
         customerId: customer.id, reasonId: input.reasonId, subreasonId: input.subreasonId, lastOperationalActivityAt: activityAt,
@@ -292,6 +392,12 @@ export async function updateSacRecord(recordId: string, input: UpdateInput, acto
     if (updated.count !== 1) throw new SacRecordError('STALE_SAC_RECORD', 'Este registro foi atualizado por outro usuário. Recarregue os dados antes de salvar novamente.', 409);
     await tx.sacItem.deleteMany({ where: { recordId } });
     if (input.items.length) await tx.sacItem.createMany({ data: input.items.map(item => ({ recordId, code: item.code, description: item.description, batch: item.batch, quantity: item.quantity, note: item.note })) });
+    await tx.sacReference.deleteMany({ where: { recordId } });
+    if (referencesToCreate.length) {
+      await tx.sacReference.createMany({
+        data: referencesToCreate.map(r => ({ recordId, type: r.type, value: r.value, note: r.note })),
+      });
+    }
     if (attachments.length) {
       await tx.attachment.createMany({
         data: attachments.map(file => ({
@@ -310,11 +416,11 @@ export async function updateSacRecord(recordId: string, input: UpdateInput, acto
       data: {
         recordId, actorId, eventType: 'UPDATED', summary: 'Dados do registro atualizados.',
         before: { orderNumber: current.orderNumber, externalTicket: current.externalTicket, itemCount: current.items.length },
-        after: { orderNumber: input.orderNumber, externalTicket: input.externalTicket, itemCount: input.items.length, attachmentCountAdded: attachments.length }, createdAt: activityAt,
+        after: { orderNumber: effectiveOrderNumber, externalTicket: effectiveExternalTicket, itemCount: input.items.length, attachmentCountAdded: attachments.length }, createdAt: activityAt,
       },
     });
     const record = await tx.sacRecord.findUniqueOrThrow({ where: { id: recordId }, include: recordInclude });
-    return { ...record, operational: classifyOperationalAttention(record) };
+    return maskRecordSensitiveData({ ...record, operational: classifyOperationalAttention(record) });
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
 
@@ -462,3 +568,39 @@ export async function changeSacStatus(recordId: string, input: ChangeStatusInput
     return finishOperation(tx, recordId);
   });
 }
+
+export async function revealSacRecordSensitive(recordId: string, field: string | undefined, actorId: string) {
+  const record = await prisma.sacRecord.findFirst({
+    where: { id: recordId, archivedAt: null },
+    include: { customer: true },
+  });
+  if (!record) {
+    throw new SacRecordError('SAC_RECORD_NOT_FOUND', 'Registro não encontrado.', 404);
+  }
+
+  let revealedValue: string | null = null;
+  let category: SensitiveCategory = 'CPF_CNPJ';
+  const fieldPath = field || 'customer.document';
+
+  if (field === 'customer.document' || field === 'customerDocument' || !field) {
+    revealedValue = record.customer?.document || null;
+    category = 'CPF_CNPJ';
+  } else {
+    throw new SacRecordError('INVALID_FIELD', 'Campo sensível inválido.', 400);
+  }
+
+  if (!revealedValue) {
+    throw new SacRecordError('FIELD_EMPTY', 'O campo solicitado não possui valor cadastrado.', 404);
+  }
+
+  await logSensitiveDataRevealAudit({
+    actorId,
+    resourceType: 'SAC_RECORD',
+    resourceId: recordId,
+    category,
+    fieldPath,
+  });
+
+  return { revealedValue, category, fieldPath };
+}
+

@@ -36,6 +36,24 @@ export interface ReferencedDocumentFile {
   attached: boolean;
 }
 
+export type ExtractedReferenceType =
+  | 'ORDER'
+  | 'INVOICE'
+  | 'SERVICE_ORDER'
+  | 'PROTOCOL'
+  | 'ATTENDANCE'
+  | 'CUSTOMER_CODE'
+  | 'INTERNAL_DOC'
+  | 'OTHER';
+
+export interface ExtractedReference {
+  type: ExtractedReferenceType;
+  value: string;
+  label: string;
+  confidence: ExtractionConfidence;
+  note?: string;
+}
+
 export interface FormExtractionResult {
   format: 'PDF' | 'IMAGE' | 'XLSX';
   isScannedPdf?: boolean;
@@ -55,6 +73,7 @@ export interface FormExtractionResult {
   suggestedReason?: CandidateField;
   suggestedSubreason?: CandidateField;
   invoiceNumber?: CandidateField;
+  candidateReferences?: ExtractedReference[];
   items: ExtractedItem[];
   additionalInfo?: AdditionalFieldInfo[];
   referencedFiles?: ReferencedDocumentFile[];

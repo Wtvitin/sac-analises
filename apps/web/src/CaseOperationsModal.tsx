@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { AlertTriangle, CalendarDays, CheckCircle2, Download, FileText, LoaderCircle, MessageSquare, Paperclip, UserCheck, X } from 'lucide-react';
+import { AlertTriangle, CalendarDays, CheckCircle2, Download, Eye, FileText, LoaderCircle, Lock, MessageSquare, Paperclip, UserCheck, X } from 'lucide-react';
 import { apiRequest, downloadFile, type AuthUser } from './api';
 import { availableCaseActions, requiresDueDateReason, requiresPriorityReason, type CaseAction, type CaseStatus } from './case-workflow';
 import { can } from './permissions';
+import { SAC_REFERENCE_LABELS } from './sac-form';
 import type { DetailedRecord } from './SacRecordForm';
 
 type Option = { id: string; name: string };
@@ -47,8 +48,37 @@ export function CaseOperationsModal({ recordId, user, onClose, onChanged }: { re
   const [dueAt, setDueAt] = useState(''); const [reason, setReason] = useState(''); const [solution, setSolution] = useState('');
   const [cause, setCause] = useState(''); const [area, setArea] = useState(''); const [corrective, setCorrective] = useState(''); const [confirmed, setConfirmed] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [revealingCustomerDoc, setRevealingCustomerDoc] = useState(false);
   const modalRef = useRef<HTMLElement>(null);
   const canWriteCases = can(user.role, 'cases:write');
+
+  const revealCustomerDoc = async () => {
+    if (!record || user.role !== 'ADMIN') return;
+    if (!window.confirm('Confirma a revelação deste dado sensível? Esta ação gerará um registro de auditoria.')) {
+      return;
+    }
+    setRevealingCustomerDoc(true);
+    try {
+      const res = await apiRequest<{ customerDocument: string }>(`/sac-records/${record.id}/reveal-sensitive`, {
+        method: 'POST',
+        body: JSON.stringify({ field: 'customerDocument' }),
+      });
+      if (res && res.customerDocument) {
+        setRecord(current => current ? {
+          ...current,
+          customer: {
+            ...current.customer,
+            document: res.customerDocument,
+            isDocumentMasked: false,
+          }
+        } : null);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Não foi possível revelar o documento do cliente.');
+    } finally {
+      setRevealingCustomerDoc(false);
+    }
+  };
 
   const handleDownload = async (attachmentId: string, filename: string) => {
     try {
@@ -126,11 +156,59 @@ export function CaseOperationsModal({ recordId, user, onClose, onChanged }: { re
     ...(history?.items.filter(item => item.eventType !== 'COMMENT_ADDED').map(item => ({ id: item.id, createdAt: item.createdAt, activity: item })) ?? []),
   ].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
   return <div className="overlay" onMouseDown={event => { if (event.target === event.currentTarget && !comment) onClose(); }}><section ref={modalRef} className="modal operational-modal" role="dialog" aria-modal="true" aria-labelledby="case-title">
-    <header className="modal-head operational-head"><div><div className="modal-title-row"><h2 id="case-title">{record.ticket}</h2><span className={`badge badge-${record.status.toLowerCase().replace('_', '-')}`}>{statusLabels[record.status]}</span><span className={`priority priority-${record.priority.toLowerCase()}`}>{priorityLabels[record.priority]}</span></div><p>{record.customer.name}<span>•</span>Pedido {record.orderNumber}<span>•</span>{record.reason.name}</p></div><button type="button" className="icon-btn" onClick={onClose} aria-label="Fechar caso"><X /></button></header>
+    <header className="modal-head operational-head"><div><div className="modal-title-row"><h2 id="case-title">{record.ticket}</h2><span className={`badge badge-${record.status.toLowerCase().replace('_', '-')}`}>{statusLabels[record.status]}</span><span className={`priority priority-${record.priority.toLowerCase()}`}>{priorityLabels[record.priority]}</span></div><p>{record.customer.name}<span>•</span>{record.orderNumber ? `Pedido ${record.orderNumber}` : (record.references && record.references.length > 0) ? `${SAC_REFERENCE_LABELS[record.references[0].type] || record.references[0].type}: ${record.references[0].value}` : 'Sem pedido'}<span>•</span>{record.reason.name}</p></div><button type="button" className="icon-btn" onClick={onClose} aria-label="Fechar caso"><X /></button></header>
     <div className="operational-summary"><div className="operational-toolbar"><span className="owner"><span className="avatar">{record.assignee ? initials(record.assignee.name) : '?'}</span>{record.assignee?.name ?? 'Sem responsável'}</span><span className={record.operational.isOverdue ? 'overdue' : ''} title={`Data limite: ${new Date(record.dueAt).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}`}><CalendarDays />{operationalDueLabel(record)}</span><span className={record.operational.isStale ? 'overdue' : ''} title={`Última atividade: ${formatDate(record.operational.lastOperationalActivityAt)}`}>{operationalActivityLabel(record)}</span>{user.role !== 'VIEWER' && (record.status === 'PENDING' || record.status === 'IN_PROGRESS') && <div>{!record.assignee && <button className="secondary" onClick={() => begin('take')}><UserCheck />Assumir</button>}<button className="secondary" onClick={() => begin('assign')}><UserCheck />Responsável</button><button className="secondary" onClick={() => begin('priority')}>Prioridade</button><button className="secondary" onClick={() => begin('due')}>Prazo</button></div>}</div>{record.operational.attentionReasons.length > 0 && <div className="modal-attention" aria-label="Motivos de atenção">{record.operational.attentionReasons.map(reasonCode => <span key={reasonCode}>{attentionLabels[reasonCode]}</span>)}</div>}</div>
     <nav className="tabs" aria-label="Conteúdo do caso">{tabs.map(value => <button type="button" key={value} className={tab === value ? 'active' : ''} onClick={() => setTab(value)}>{value}</button>)}</nav>
     <div className="modal-body operational-body">{error && <div className="inline-error" role="alert">{error}<button onClick={() => setError('')}>Fechar</button></div>}
-      {tab === 'Detalhes' && <section className="case-details"><dl><div><dt>Canal</dt><dd>{record.channelCatalog?.name ?? 'Não informado'}</dd></div><div><dt>Abertura</dt><dd>{formatDate(record.openedAt)}</dd></div><div><dt>Última atualização</dt><dd>{formatDate(record.updatedAt)}</dd></div><div><dt>Protocolo externo</dt><dd>{record.externalTicket ?? 'Não informado'}</dd></div></dl><article><strong>Descrição</strong><p>{record.description}</p></article>{record.internalNote && <article><strong>Observação interna</strong><p>{record.internalNote}</p></article>}<div className="case-conclusion"><article><strong>Resumo da solução</strong><p>{record.solutionSummary || 'Ainda não informado.'}</p></article><article><strong>Causa identificada</strong><p>{record.identifiedCause || 'Ainda não informada.'}</p></article><article><strong>Área responsável</strong><p>{record.responsibleArea || 'Ainda não informada.'}</p></article><article><strong>Ação corretiva</strong><p>{record.correctiveAction || 'Ainda não informada.'}</p></article></div></section>}
+      {tab === 'Detalhes' && <section className="case-details">
+        <dl>
+          <div><dt>Canal</dt><dd>{record.channelCatalog?.name ?? 'Não informado'}</dd></div>
+          <div><dt>Abertura</dt><dd>{formatDate(record.openedAt)}</dd></div>
+          <div><dt>Última atualização</dt><dd>{formatDate(record.updatedAt)}</dd></div>
+          <div><dt>Protocolo externo</dt><dd>{record.externalTicket ?? 'Não informado'}</dd></div>
+          {record.customer?.document && (
+            <div>
+              <dt>CPF / CNPJ do cliente</dt>
+              <dd style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <span>{record.customer.document}</span>
+                {record.customer.isDocumentMasked && (
+                  <span className="sac-masked-badge">
+                    <Lock style={{ width: 10, height: 10 }} /> Mascarado
+                  </span>
+                )}
+                {record.customer.isDocumentMasked && user.role === 'ADMIN' && (
+                  <button
+                    type="button"
+                    className="sac-reveal-btn"
+                    disabled={revealingCustomerDoc}
+                    onClick={revealCustomerDoc}
+                    title="Revelar documento completo (ação auditada)"
+                  >
+                    {revealingCustomerDoc ? <LoaderCircle className="spin" style={{ width: 12, height: 12 }} /> : <Eye style={{ width: 12, height: 12 }} />}
+                    Revelar
+                  </button>
+                )}
+              </dd>
+            </div>
+          )}
+        </dl>
+        {record.references && record.references.length > 0 && (
+          <article style={{ marginTop: '12px', marginBottom: '12px' }}>
+            <strong>Referências do caso ({record.references.length})</strong>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '6px' }}>
+              {record.references.map(ref => (
+                <span key={ref.id} className="sac-reference-badge" title={ref.note || undefined}>
+                  <strong>{SAC_REFERENCE_LABELS[ref.type] || ref.type}:</strong> {ref.value}
+                  {ref.note && <small style={{ opacity: 0.8, marginLeft: 4 }}>({ref.note})</small>}
+                </span>
+              ))}
+            </div>
+          </article>
+        )}
+        <article><strong>Descrição</strong><p>{record.description}</p></article>
+        {record.internalNote && <article><strong>Observação interna</strong><p>{record.internalNote}</p></article>}
+        <div className="case-conclusion"><article><strong>Resumo da solução</strong><p>{record.solutionSummary || 'Ainda não informado.'}</p></article><article><strong>Causa identificada</strong><p>{record.identifiedCause || 'Ainda não informada.'}</p></article><article><strong>Área responsável</strong><p>{record.responsibleArea || 'Ainda não informada.'}</p></article><article><strong>Ação corretiva</strong><p>{record.correctiveAction || 'Ainda não informada.'}</p></article></div>
+      </section>}
       {tab === 'Itens' && <section className="modal-section"><div className="section-heading"><div><h3>Itens relacionados</h3><p>{record.items.length} item(ns) registrado(s)</p></div></div>{record.items.length ? <div className="compact-table"><table><thead><tr><th>Código</th><th>Descrição</th><th>Lote</th><th>Quantidade</th></tr></thead><tbody>{record.items.map(item => <tr key={item.id}><td>{item.code}</td><td>{item.description}</td><td>{item.batch ?? '—'}</td><td>{item.quantity}</td></tr>)}</tbody></table></div> : <div className="empty-state"><FileText /><strong>Nenhum item relacionado</strong></div>}</section>}
       {tab === 'Evidências' && <section className="modal-section"><div className="section-heading"><div><h3>Evidências anexadas</h3><p>Arquivos preservados no registro ({record.attachments.length})</p></div></div>{record.attachments.length ? <div className="attachment-list">{record.attachments.map(file => { const isQuarantined = file.status && file.status !== 'ACTIVE'; return <article key={file.id} className={`attachment-item${isQuarantined ? ' attachment-unavailable' : ''}`}><span className="file-icon"><Paperclip aria-hidden="true" /></span><div className="attachment-details"><strong>{file.originalName}</strong><small>{file.mimeType} · {(file.sizeBytes / 1024).toFixed(1)} KB{file.author?.name ? ` · Enviado por ${file.author.name}` : ''}{file.createdAt ? ` · ${formatDate(file.createdAt)}` : ''}</small>{isQuarantined && <span className="badge badge-pendente" style={{ marginTop: '5px' }}>Indisponível (Quarentena)</span>}</div><button type="button" className="secondary attachment-download-btn" disabled={Boolean(isQuarantined || downloadingId === file.id)} onClick={() => handleDownload(file.id, file.originalName)} aria-label={`Baixar evidência ${file.originalName}`}>{downloadingId === file.id ? <LoaderCircle className="spin" aria-hidden="true" /> : <Download aria-hidden="true" />}<span>{downloadingId === file.id ? 'Baixando...' : 'Baixar'}</span></button></article>; })}</div> : <div className="empty-state"><Paperclip /><strong>Nenhuma evidência anexada</strong><span>Nenhum arquivo de evidência foi anexado a este caso.</span></div>}</section>}
       {tab === 'Histórico' && <section className="history-section"><form className="comment-form" onSubmit={sendComment}><label htmlFor="case-comment">Comentário interno</label><textarea id="case-comment" value={comment} maxLength={4000} disabled={user.role === 'VIEWER'} onChange={event => setComment(event.target.value)} placeholder={user.role === 'VIEWER' ? 'Perfil de consulta não pode comentar.' : 'Registre uma atualização objetiva...'} /><div><small>{comment.length}/4000</small>{user.role !== 'VIEWER' && <button className="primary" disabled={!comment.trim() || saving}><MessageSquare />Adicionar comentário</button>}</div></form><div className="timeline timeline-expanded"><h3>Linha do tempo</h3>{timeline.map(item => 'comment' in item ? <div key={item.id}><i className="dot magenta" /><time>{formatDate(item.createdAt)}</time><p><strong>Comentário de {item.comment.author.name}</strong><span>{item.comment.body}</span></p></div> : <div key={item.id}><i className="dot" /><time>{formatDate(item.createdAt)}</time><p><strong>{item.activity.summary}</strong><span>Por {item.activity.actor.name}</span></p></div>)}{!timeline.length && <div className="empty-state"><CheckCircle2 /><strong>Nenhum evento registrado</strong></div>}</div>{history && history.page * history.pageSize < history.total && <button className="secondary history-more" onClick={() => setHistoryPage(value => value + 1)}>Carregar mais</button>}</section>}

@@ -7,13 +7,15 @@ const mock = vi.hoisted(() => {
     sacRecord,
     reason: { findUnique: vi.fn() }, channel: { findUnique: vi.fn() }, subreason: { findUnique: vi.fn() }, user: { findUnique: vi.fn() },
     customer: { upsert: vi.fn() }, ticketCounter: { upsert: vi.fn() }, sacItem: { deleteMany: vi.fn(), createMany: vi.fn() },
+    sacReference: { deleteMany: vi.fn(), createMany: vi.fn() },
     attachment: { createMany: vi.fn() }, activityLog: { create: vi.fn() },
+    adminAudit: { create: vi.fn() },
   };
   return { database, sacRecord, transaction: vi.fn(async (callback: (tx: typeof database) => unknown) => callback(database)) };
 });
 
 vi.mock('../../lib/prisma.js', () => ({ prisma: { ...mock.database, $transaction: mock.transaction } }));
-import { createSacRecord, updateSacRecord } from './sac.service.js';
+import { createSacRecord, revealSacRecordSensitive, updateSacRecord } from './sac.service.js';
 
 const input = {
   customerName: 'Cliente Alfa', orderNumber: 'PED-123', externalTicket: '', channelId: 'channel-1', reasonId: 'reason-1', subreasonId: '',
@@ -31,6 +33,8 @@ describe('SAC creation and editing persistence (isolated)', () => {
     mock.database.activityLog.create.mockResolvedValue({ id: 'activity-1' });
     mock.database.sacItem.deleteMany.mockResolvedValue({ count: 0 });
     mock.database.sacItem.createMany.mockResolvedValue({ count: 0 });
+    mock.database.sacReference.deleteMany.mockResolvedValue({ count: 0 });
+    mock.database.sacReference.createMany.mockResolvedValue({ count: 0 });
     mock.database.attachment.createMany.mockResolvedValue({ count: 0 });
   });
 
@@ -78,4 +82,65 @@ describe('SAC creation and editing persistence (isolated)', () => {
     await expect(updateSacRecord('sac-1', edit, 'admin-1', [attachment])).rejects.toMatchObject({ code: 'TOO_MANY_ATTACHMENTS', status: 422 });
     expect(mock.sacRecord.updateMany).not.toHaveBeenCalled();
   });
+
+  it('creates case without orderNumber but with multisector references and masks customer document', async () => {
+    const inputWithoutOrder = {
+      ...input,
+      orderNumber: undefined,
+      references: [
+        { type: 'INVOICE' as const, value: 'NF-998877', note: 'Nota fiscal' },
+        { type: 'SERVICE_ORDER' as const, value: 'OS-1234', note: 'Ordem de serviço' },
+      ],
+    };
+    const parsed = createSacRecordSchema.parse(inputWithoutOrder);
+    expect(parsed.orderNumber).toBeNull();
+    expect(parsed.references).toHaveLength(2);
+
+    const saved = {
+      id: 'sac-2',
+      ticket: 'SAC-2026-0008',
+      orderNumber: null,
+      customer: { id: 'cust-1', name: 'Cliente Alfa', document: '123.456.789-00' },
+      references: [
+        { id: 'ref-1', type: 'INVOICE', value: 'NF-998877' },
+        { id: 'ref-2', type: 'SERVICE_ORDER', value: 'OS-1234' },
+      ],
+    };
+
+    mock.sacRecord.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+    mock.sacRecord.create.mockResolvedValue({ id: 'sac-2' });
+    mock.sacRecord.findUniqueOrThrow.mockResolvedValue(saved);
+
+    const result = await createSacRecord(parsed, 'admin-1', 'b5215944-a474-4b7f-9efe-f9d3e80b7c2e');
+    expect(result.created).toBe(true);
+    // Customer document must be masked in response
+    expect(result.record.customer.document).toBe('***.***.789-**');
+    expect(result.record.customer.isDocumentMasked).toBe(true);
+
+    const createCall = mock.sacRecord.create.mock.calls[0][0];
+    expect(createCall.data.orderNumber).toBeNull();
+    expect(createCall.data.references.create).toHaveLength(2);
+  });
+
+  it('allows ADMIN to reveal customer document on SAC record and logs audit without storing value', async () => {
+    mock.sacRecord.findFirst.mockResolvedValue({
+      id: 'sac-2',
+      customer: { id: 'cust-1', document: '123.456.789-00' },
+    });
+    mock.database.adminAudit.create.mockResolvedValue({});
+
+    const result = await revealSacRecordSensitive('sac-2', 'customerDocument', 'admin-1');
+    expect(result.revealedValue).toBe('123.456.789-00');
+    expect(result.category).toBe('CPF_CNPJ');
+
+    expect(mock.database.adminAudit.create).toHaveBeenCalledTimes(1);
+    const auditCall = mock.database.adminAudit.create.mock.calls[0][0];
+    expect(auditCall.data.type).toBe('SENSITIVE_DATA_REVEALED');
+    expect(auditCall.data.actorId).toBe('admin-1');
+    expect(auditCall.data.metadata.category).toBe('CPF_CNPJ');
+    expect(auditCall.data.metadata.resourceType).toBe('SAC_RECORD');
+    expect(auditCall.data.metadata.resourceId).toBe('sac-2');
+    expect(JSON.stringify(auditCall.data)).not.toContain('123.456.789-00');
+  });
 });
+

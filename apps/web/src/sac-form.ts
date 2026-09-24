@@ -1,13 +1,44 @@
 export type PriorityValue = '' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 export type SacItemForm = { key: string; code: string; description: string; batch: string; quantity: string; note: string };
+
+export type SacReferenceType =
+  | 'ORDER'
+  | 'INVOICE'
+  | 'SERVICE_ORDER'
+  | 'PROTOCOL'
+  | 'ATTENDANCE'
+  | 'CUSTOMER_CODE'
+  | 'INTERNAL_DOC'
+  | 'OTHER';
+
+export const SAC_REFERENCE_LABELS: Record<SacReferenceType, string> = {
+  ORDER: 'Pedido',
+  INVOICE: 'Nota fiscal',
+  SERVICE_ORDER: 'Ordem de serviço',
+  PROTOCOL: 'Protocolo',
+  ATTENDANCE: 'Atendimento',
+  CUSTOMER_CODE: 'Código do cliente',
+  INTERNAL_DOC: 'Documento interno',
+  OTHER: 'Outro',
+};
+
+export type SacReferenceForm = {
+  key: string;
+  type: SacReferenceType;
+  value: string;
+  note?: string;
+};
+
 export type SacFormValues = {
-  customerName: string; orderNumber: string; externalTicket: string; channelId: string;
+  customerName: string; orderNumber: string; externalTicket: string;
+  references: SacReferenceForm[];
+  channelId: string;
   openedAt: string; reasonId: string; subreasonId: string; priority: PriorityValue;
   description: string; internalNote: string; assigneeId: string; dueDate: string;
   identifiedCause: string; responsibleArea: string; correctiveAction: string; items: SacItemForm[];
 };
 
-export type SacFormErrors = Partial<Record<Exclude<keyof SacFormValues, 'items'> | `item-${number}`, string>>;
+export type SacFormErrors = Partial<Record<Exclude<keyof SacFormValues, 'items' | 'references'> | `item-${number}` | `reference-${number}`, string>>;
 
 export const MAX_FILES = 5;
 export const MAX_FILE_SIZE = 10 * 1024 * 1024;
@@ -18,8 +49,17 @@ export function toLocalDateTimeInput(value = new Date()) {
   return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}T${pad(value.getHours())}:${pad(value.getMinutes())}`;
 }
 
+export function createEmptyReference(type: SacReferenceType = 'ORDER'): SacReferenceForm {
+  return { key: crypto.randomUUID(), type, value: '', note: '' };
+}
+
 export function createEmptySacForm(): SacFormValues {
-  return { customerName: '', orderNumber: '', externalTicket: '', channelId: '', openedAt: toLocalDateTimeInput(), reasonId: '', subreasonId: '', priority: '', description: '', internalNote: '', assigneeId: '', dueDate: '', identifiedCause: '', responsibleArea: '', correctiveAction: '', items: [] };
+  return {
+    customerName: '', orderNumber: '', externalTicket: '', references: [],
+    channelId: '', openedAt: toLocalDateTimeInput(), reasonId: '', subreasonId: '',
+    priority: '', description: '', internalNote: '', assigneeId: '', dueDate: '',
+    identifiedCause: '', responsibleArea: '', correctiveAction: '', items: [],
+  };
 }
 
 export function createEmptyItem(): SacItemForm {
@@ -29,7 +69,6 @@ export function createEmptyItem(): SacItemForm {
 export function validateSacForm(form: SacFormValues): SacFormErrors {
   const errors: SacFormErrors = {};
   if (form.customerName.trim().length < 2) errors.customerName = 'Informe o cliente.';
-  if (!form.orderNumber.trim()) errors.orderNumber = 'Informe o número do pedido.';
   if (!form.channelId) errors.channelId = 'Selecione um canal.';
   if (!form.openedAt || Number.isNaN(new Date(form.openedAt).getTime())) errors.openedAt = 'Informe uma data de abertura válida.';
   if (!form.reasonId) errors.reasonId = 'Selecione um motivo.';
@@ -39,6 +78,9 @@ export function validateSacForm(form: SacFormValues): SacFormErrors {
   else if (form.openedAt && new Date(`${form.dueDate}T23:59:59`).getTime() < new Date(form.openedAt).getTime()) errors.dueDate = 'O prazo não pode ser anterior à abertura.';
   form.items.forEach((item, index) => {
     if (!item.code.trim() || !item.description.trim() || !item.quantity || Number(item.quantity) <= 0) errors[`item-${index}`] = 'Informe código, descrição e quantidade maior que zero.';
+  });
+  form.references.forEach((ref, index) => {
+    if (!ref.value.trim()) errors[`reference-${index}`] = 'Informe o identificador da referência.';
   });
   return errors;
 }
@@ -59,15 +101,33 @@ export function sacFormPayload(
   importSessionId?: string | null,
   preserveImportAsAttachment?: boolean
 ) {
+  const cleanRefs = form.references
+    .filter(r => r.value.trim())
+    .map(({ key: _key, ...r }) => ({ ...r, value: r.value.trim(), note: r.note?.trim() || null }));
+
+  const effectiveOrder = form.orderNumber.trim() || cleanRefs.find(r => r.type === 'ORDER')?.value || '';
+  const effectiveTicket = form.externalTicket.trim() || cleanRefs.find(r => r.type === 'ATTENDANCE')?.value || '';
+
   return {
-    customerName: form.customerName, orderNumber: form.orderNumber, externalTicket: form.externalTicket,
-    channelId: form.channelId, openedAt: new Date(form.openedAt).toISOString(), reasonId: form.reasonId,
-    subreasonId: form.subreasonId || undefined, priority: form.priority, description: form.description,
-    internalNote: form.internalNote, assigneeId: form.assigneeId || undefined,
-    dueAt: new Date(`${form.dueDate}T23:59:59`).toISOString(), identifiedCause: form.identifiedCause,
-    responsibleArea: form.responsibleArea, correctiveAction: form.correctiveAction,
+    customerName: form.customerName,
+    orderNumber: effectiveOrder || undefined,
+    externalTicket: effectiveTicket || undefined,
+    references: cleanRefs,
+    channelId: form.channelId,
+    openedAt: new Date(form.openedAt).toISOString(),
+    reasonId: form.reasonId,
+    subreasonId: form.subreasonId || undefined,
+    priority: form.priority,
+    description: form.description,
+    internalNote: form.internalNote,
+    assigneeId: form.assigneeId || undefined,
+    dueAt: new Date(`${form.dueDate}T23:59:59`).toISOString(),
+    identifiedCause: form.identifiedCause,
+    responsibleArea: form.responsibleArea,
+    correctiveAction: form.correctiveAction,
     items: form.items.map(({ key: _key, ...item }) => ({ ...item, quantity: Number(item.quantity) })),
-    allowDuplicateExternalTicket, ...(updatedAt ? { updatedAt } : {}),
+    allowDuplicateExternalTicket,
+    ...(updatedAt ? { updatedAt } : {}),
     ...(importSessionId ? { importSessionId, preserveImportAsAttachment: preserveImportAsAttachment ?? true } : {}),
   };
 }

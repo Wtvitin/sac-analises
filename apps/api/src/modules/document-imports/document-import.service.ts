@@ -4,6 +4,12 @@ import { dirname, resolve } from 'node:path';
 import { prisma } from '../../lib/prisma.js';
 import { getStorageProvider, sanitizeOriginalName } from '../../lib/storage/index.js';
 import { extractDocumentData, detectDocumentFormat, type FormExtractionResult } from '../../lib/document-extraction/index.js';
+import {
+  sanitizeDocumentImportPayload,
+  detectSensitiveCategory,
+  logSensitiveDataRevealAudit,
+  type SensitiveCategory,
+} from '../../lib/privacy/privacy.service.js';
 
 export class DocumentImportError extends Error {
   constructor(public readonly code: string, message: string, public readonly status = 400) {
@@ -98,7 +104,7 @@ export async function createDocumentImport(
     originalName: session.originalName,
     format: session.format,
     status: session.status,
-    extractedData,
+    extractedData: sanitizeDocumentImportPayload(extractedData),
     error: session.error,
     expiresAt: session.expiresAt.toISOString(),
     createdAt: session.createdAt.toISOString(),
@@ -136,11 +142,70 @@ export async function getDocumentImport(
     originalName: session.originalName,
     format: session.format,
     status: session.status,
-    extractedData: session.extractedData as FormExtractionResult | null,
+    extractedData: sanitizeDocumentImportPayload(session.extractedData) as FormExtractionResult | null,
     error: session.error,
     expiresAt: session.expiresAt.toISOString(),
     createdAt: session.createdAt.toISOString(),
   };
+}
+
+export async function revealDocumentImportField(
+  importId: string,
+  fieldIdentifier: { index?: number; fieldName?: string },
+  userId: string,
+  userRole: string
+): Promise<{ value: string; category: string }> {
+  if (userRole !== 'ADMIN') {
+    throw new DocumentImportError('FORBIDDEN', 'Apenas administradores podem revelar dados sensíveis.', 403);
+  }
+
+  const session = await prisma.documentImport.findUnique({
+    where: { id: importId },
+  });
+
+  if (!session) {
+    throw new DocumentImportError('IMPORT_NOT_FOUND', 'Sessão de importação não encontrada.', 404);
+  }
+
+  const rawExtracted: any = session.extractedData;
+  if (!rawExtracted) {
+    throw new DocumentImportError('DATA_NOT_FOUND', 'Dados extraídos não encontrados.', 404);
+  }
+
+  let rawValue = '';
+  let category: SensitiveCategory = 'SENSITIVE';
+
+  if (typeof fieldIdentifier.index === 'number' && Array.isArray(rawExtracted.additionalInfo)) {
+    const item = rawExtracted.additionalInfo[fieldIdentifier.index];
+    if (item) {
+      rawValue = String(item.value || '');
+      category = detectSensitiveCategory(item.label || '', item.category) || 'SENSITIVE';
+    }
+  } else if (fieldIdentifier.fieldName === 'customerContact' && rawExtracted.customerContact) {
+    rawValue = String(rawExtracted.customerContact.value || '');
+    category = /@/.test(rawValue) ? 'EMAIL' : 'PHONE';
+  } else if (fieldIdentifier.fieldName === 'customerAddress' && rawExtracted.customerAddress) {
+    rawValue = String(rawExtracted.customerAddress.value || '');
+    category = 'SENSITIVE';
+  }
+
+  if (!rawValue) {
+    throw new DocumentImportError('FIELD_NOT_FOUND', 'Campo sensível não encontrado na sessão.', 404);
+  }
+
+  const fieldPath = typeof fieldIdentifier.index === 'number'
+    ? `additionalInfo.${fieldIdentifier.index}`
+    : fieldIdentifier.fieldName;
+
+  await logSensitiveDataRevealAudit({
+    actorId: userId,
+    resourceType: 'DOCUMENT_IMPORT',
+    resourceId: importId,
+    category,
+    fieldPath,
+  });
+
+  return { value: rawValue, category };
 }
 
 export async function cancelDocumentImport(

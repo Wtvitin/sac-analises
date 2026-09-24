@@ -2,6 +2,7 @@ import type {
   AdditionalFieldInfo,
   CandidateField,
   ExtractedItem,
+  ExtractedReference,
   RawDocumentText,
   ReferencedDocumentFile,
 } from './document-extraction.types.js';
@@ -21,6 +22,7 @@ export interface InterpretedForm {
   internalNote?: CandidateField;
   suggestedAssignee?: CandidateField;
   invoiceNumber?: CandidateField;
+  candidateReferences?: ExtractedReference[];
   items: ExtractedItem[];
   additionalInfo?: AdditionalFieldInfo[];
   referencedFiles?: ReferencedDocumentFile[];

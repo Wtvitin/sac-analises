@@ -47,10 +47,28 @@ export const sacItemSchema = z.object({
   note: optionalText(500),
 });
 
+export const sacReferenceTypeSchema = z.enum([
+  'ORDER',
+  'INVOICE',
+  'SERVICE_ORDER',
+  'PROTOCOL',
+  'ATTENDANCE',
+  'CUSTOMER_CODE',
+  'INTERNAL_DOC',
+  'OTHER',
+]);
+
+export const sacReferenceSchema = z.object({
+  type: sacReferenceTypeSchema,
+  value: z.string().trim().min(1, 'Informe o valor da referência.').max(120),
+  note: optionalText(300),
+});
+
 const sacRecordFields = {
   customerName: z.string().transform(value => value.trim().replace(/\s+/g, ' ')).pipe(z.string().min(2).max(160)),
-  orderNumber: z.string().trim().min(1).max(40),
+  orderNumber: optionalText(80),
   externalTicket: optionalText(80),
+  references: z.array(sacReferenceSchema).max(20, 'Adicione no máximo 20 referências.').default([]),
   channelId: z.string().trim().min(1, 'Selecione um canal.'),
   reasonId: z.string().trim().min(1, 'Selecione um motivo.'),
   subreasonId: z.string().trim().optional().transform(value => value || null),

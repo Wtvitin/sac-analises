@@ -8,9 +8,9 @@ import {
   listSacRecordsSchema, priorityChangeSchema, takeCaseSchema, updateSacRecordSchema,
 } from './sac.schema.js';
 import {
-  SacRecordError, addSacComment, assignSacRecord, changeSacDueDate, changeSacPriority, changeSacStatus, checkExternalTicket, createSacRecord, getSacHistory, getSacRecord, listSacRecords, searchCustomers, takeSacRecord, updateSacRecord,
+  SacRecordError, addSacComment, assignSacRecord, changeSacDueDate, changeSacPriority, changeSacStatus, checkExternalTicket, createSacRecord, getSacHistory, getSacRecord, listSacRecords, revealSacRecordSensitive, searchCustomers, takeSacRecord, updateSacRecord,
 } from './sac.service.js';
-import { requirePermission } from '../auth/auth.middleware.js';
+import { requirePermission, requireRole } from '../auth/auth.middleware.js';
 
 export const sacRouter = Router();
 
@@ -101,6 +101,16 @@ sacRouter.get('/:id/history', async (req, res, next) => {
 sacRouter.post('/:id/status', requirePermission('cases:write'), async (req, res, next) => {
   try { res.json({ data: await changeSacStatus(String(req.params.id), changeStatusSchema.parse(req.body), req.auth!.userId, req.auth!.role as 'ADMIN' | 'ANALYST') }); }
   catch (error) { next(error); }
+});
+
+sacRouter.post('/:id/reveal-sensitive', requireRole('ADMIN'), async (req, res, next) => {
+  try {
+    const { field } = req.body || {};
+    const result = await revealSacRecordSensitive(String(req.params.id), field, req.auth!.userId);
+    res.json({ data: result });
+  } catch (error) {
+    next(error);
+  }
 });
 
 sacRouter.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {

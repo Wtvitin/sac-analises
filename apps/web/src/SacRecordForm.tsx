@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import {
-  AlertCircle, AlertTriangle, Check, Copy, FileCheck, FileText, HelpCircle, Info, LoaderCircle,
-  PackagePlus, Paperclip, PenTool, Plus, Trash2, UploadCloud, X,
+  AlertCircle, AlertTriangle, Check, Copy, Eye, FileCheck, FileText, HelpCircle, Info, LoaderCircle,
+  Lock, PackagePlus, Paperclip, PenTool, Plus, ShieldAlert, Trash2, UploadCloud, X,
 } from 'lucide-react';
-import { apiRequest } from './api';
+import { apiRequest, type AuthUser } from './api';
 import type { OperationalIndicators } from './data';
 import {
-  ACCEPTED_FILE_TYPES, createEmptyItem, createEmptySacForm, hasUnsavedSacChanges, sacFormPayload,
-  toLocalDateTimeInput, validateAttachments, validateSacForm, type SacFormErrors, type SacFormValues,
+  ACCEPTED_FILE_TYPES, createEmptyItem, createEmptyReference, createEmptySacForm, hasUnsavedSacChanges,
+  SAC_REFERENCE_LABELS, sacFormPayload, toLocalDateTimeInput, validateAttachments, validateSacForm,
+  type SacFormErrors, type SacFormValues, type SacReferenceForm, type SacReferenceType,
 } from './sac-form';
 import { DocumentImportDropzone } from './DocumentImportDropzone';
 import './document-import.css';
@@ -15,10 +16,12 @@ import './document-import.css';
 type Option = { id: string; name: string; active?: boolean };
 type CatalogList = { items: Option[] };
 export type DetailedRecord = {
-  id: string; ticket: string; orderNumber: string; externalTicket: string | null; description: string; internalNote: string | null;
+  id: string; ticket: string; orderNumber: string | null; externalTicket: string | null; description: string; internalNote: string | null;
   priority: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'; status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED'; openedAt: string; dueAt: string; updatedAt: string;
   identifiedCause: string | null; responsibleArea: string | null; correctiveAction: string | null;
-  customer: Option; reason: Option; subreason: Option | null; channelCatalog: Option | null; assignee: Option | null;
+  customer: Option & { document?: string | null; isDocumentMasked?: boolean };
+  reason: Option; subreason: Option | null; channelCatalog: Option | null; assignee: Option | null;
+  references?: Array<{ id: string; type: SacReferenceType; value: string; note: string | null }>;
   items: Array<{ id: string; code: string; description: string; batch: string | null; quantity: string; note: string | null }>;
   attachments: Array<{ id: string; originalName: string; mimeType: string; sizeBytes: number; status?: 'ACTIVE' | 'QUARANTINED' | 'PENDING_DELETION'; createdAt?: string; author?: { id: string; name: string } | null }>;
   operational: OperationalIndicators;
@@ -70,8 +73,23 @@ function toDateInput(value: string) {
 }
 
 function fromRecord(record: DetailedRecord): SacFormValues {
+  const references: SacReferenceForm[] = [];
+  if (Array.isArray(record.references) && record.references.length > 0) {
+    for (const r of record.references) {
+      references.push({ key: r.id, type: r.type, value: r.value, note: r.note ?? '' });
+    }
+  } else {
+    if (record.orderNumber) {
+      references.push({ key: crypto.randomUUID(), type: 'ORDER', value: record.orderNumber, note: '' });
+    }
+    if (record.externalTicket) {
+      references.push({ key: crypto.randomUUID(), type: 'ATTENDANCE', value: record.externalTicket, note: '' });
+    }
+  }
+
   return {
-    customerName: record.customer.name, orderNumber: record.orderNumber, externalTicket: record.externalTicket ?? '',
+    customerName: record.customer.name, orderNumber: record.orderNumber ?? '', externalTicket: record.externalTicket ?? '',
+    references,
     channelId: record.channelCatalog?.id ?? '', openedAt: toLocalDateTimeInput(new Date(record.openedAt)), reasonId: record.reason.id,
     subreasonId: record.subreason?.id ?? '', priority: record.priority, description: record.description,
     internalNote: record.internalNote ?? '', assigneeId: record.assignee?.id ?? '', dueDate: toDateInput(record.dueAt),
@@ -84,7 +102,20 @@ function Confirm({ title, text, action, onCancel, onConfirm }: { title: string; 
   return <div className="overlay sac-confirm-layer"><section className="modal sac-confirm" role="alertdialog" aria-modal="true" aria-labelledby="sac-confirm-title"><header className="modal-head"><div><h2 id="sac-confirm-title">{title}</h2><p>{text}</p></div></header><footer className="form-footer"><button type="button" className="secondary" onClick={onCancel}>Continuar editando</button><button type="button" className="sac-danger-action" onClick={onConfirm}>{action}</button></footer></section></div>;
 }
 
-export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { recordId?: string; onClose: () => void; onSaved: (record: DetailedRecord, created: boolean) => void; onOpenCatalogs: () => void }) {
+export function SacRecordForm({
+  recordId,
+  currentUser,
+  onClose,
+  onSaved,
+  onOpenCatalogs,
+}: {
+  recordId?: string;
+  currentUser?: AuthUser;
+  onClose: () => void;
+  onSaved: (record: DetailedRecord, created: boolean) => void;
+  onOpenCatalogs: () => void;
+}) {
+  const isAdmin = currentUser?.role === 'ADMIN';
   const [form, setForm] = useState<SacFormValues>(() => createEmptySacForm());
   const [initial, setInitial] = useState<SacFormValues>(() => createEmptySacForm());
   const [record, setRecord] = useState<DetailedRecord | null>(null);
@@ -101,10 +132,102 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
   const [importedFile, setImportedFile] = useState<{ name: string; format: string } | null>(null);
   const [extractedData, setExtractedData] = useState<any | null>(null);
   const [preserveImportAsAttachment, setPreserveImportAsAttachment] = useState(true);
+  const [copySensitiveConfirm, setCopySensitiveConfirm] = useState(false);
+  const [revealingIndex, setRevealingIndex] = useState<number | null>(null);
 
   const modalRef = useRef<HTMLFormElement>(null); const firstFieldRef = useRef<HTMLInputElement>(null); const idempotencyKey = useRef(crypto.randomUUID());
   const dirty = useMemo(() => Boolean(importSessionId) || hasUnsavedSacChanges(form, initial, files), [importSessionId, form, initial, files]);
   const editing = Boolean(recordId);
+
+  const addReference = () => {
+    setForm(curr => ({
+      ...curr,
+      references: [...curr.references, createEmptyReference()],
+    }));
+  };
+
+  const removeReference = (index: number) => {
+    setForm(curr => ({
+      ...curr,
+      references: curr.references.filter((_, i) => i !== index),
+    }));
+  };
+
+  const updateReference = (index: number, patch: Partial<SacReferenceForm>) => {
+    setForm(curr => {
+      const updated = [...curr.references];
+      if (updated[index]) {
+        updated[index] = { ...updated[index], ...patch };
+      }
+      return { ...curr, references: updated };
+    });
+  };
+
+  const handleRevealImportField = async (index: number) => {
+    if (!importSessionId || !isAdmin) return;
+    setRevealingIndex(index);
+    try {
+      const res = await apiRequest<{ revealedValue: string; category: string }>(
+        `/document-imports/${importSessionId}/reveal`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ index }),
+        }
+      );
+      if (res && res.revealedValue) {
+        setExtractedData((prev: any) => {
+          if (!prev || !Array.isArray(prev.additionalInfo)) return prev;
+          const updated = [...prev.additionalInfo];
+          if (updated[index]) {
+            updated[index] = {
+              ...updated[index],
+              value: res.revealedValue,
+              isMasked: false,
+            };
+          }
+          return { ...prev, additionalInfo: updated };
+        });
+      }
+    } catch (err: any) {
+      alert(err.message || 'Não foi possível revelar o dado sensível.');
+    } finally {
+      setRevealingIndex(null);
+    }
+  };
+
+  const executeCopyAdditionalInfo = (includeSensitive: boolean) => {
+    if (!extractedData?.additionalInfo || extractedData.additionalInfo.length === 0) return;
+    const itemsToCopy = extractedData.additionalInfo.filter((info: any) => {
+      if (includeSensitive) return true;
+      return info.category !== 'SENSITIVE' && !info.isSensitive;
+    });
+
+    if (itemsToCopy.length === 0) {
+      alert('Nenhum campo para copiar (campos sensíveis foram excluídos).');
+      return;
+    }
+
+    const lines = itemsToCopy.map((info: any) => `${info.label}: ${info.value}`);
+    const textToAppend = `[Informações extraídas do documento]\n${lines.join('\n')}`;
+    setForm(curr => ({
+      ...curr,
+      internalNote: curr.internalNote ? `${curr.internalNote}\n\n${textToAppend}` : textToAppend,
+    }));
+  };
+
+  const handleCopyAdditionalInfoToNote = () => {
+    if (!extractedData?.additionalInfo || extractedData.additionalInfo.length === 0) return;
+    const hasSensitive = extractedData.additionalInfo.some(
+      (info: any) => info.category === 'SENSITIVE' || info.isSensitive
+    );
+
+    if (isAdmin && hasSensitive) {
+      setCopySensitiveConfirm(true);
+      return;
+    }
+
+    executeCopyAdditionalInfo(false);
+  };
 
   const handleDiscardImport = async () => {
     if (importSessionId) {
@@ -115,16 +238,6 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
     setExtractedData(null);
     setForm(initial);
     setEntryMode('manual');
-  };
-
-  const handleCopyAdditionalInfoToNote = () => {
-    if (!extractedData?.additionalInfo || extractedData.additionalInfo.length === 0) return;
-    const lines = extractedData.additionalInfo.map((info: any) => `${info.label}: ${info.value}`);
-    const textToAppend = `[Informações extraídas do documento]\n${lines.join('\n')}`;
-    setForm(curr => ({
-      ...curr,
-      internalNote: curr.internalNote ? `${curr.internalNote}\n\n${textToAppend}` : textToAppend,
-    }));
   };
 
   const handleImportFile = async (file: File) => {
@@ -188,11 +301,49 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
               }))
             : current.items;
 
+          const extractedRefs: SacReferenceForm[] = [];
+          if (Array.isArray(ext.candidateReferences) && ext.candidateReferences.length > 0) {
+            for (const cand of ext.candidateReferences) {
+              extractedRefs.push({
+                key: crypto.randomUUID(),
+                type: cand.type,
+                value: cand.value,
+                note: cand.label || '',
+              });
+            }
+          } else if (ext.invoiceNumber?.value) {
+            extractedRefs.push({
+              key: crypto.randomUUID(),
+              type: 'INVOICE',
+              value: ext.invoiceNumber.value,
+              note: 'Nota fiscal identificada no formulário',
+            });
+          }
+
+          if (ext.orderNumber?.value && !extractedRefs.some(r => r.type === 'ORDER' && r.value === ext.orderNumber.value)) {
+            extractedRefs.push({
+              key: crypto.randomUUID(),
+              type: 'ORDER',
+              value: ext.orderNumber.value,
+              note: '',
+            });
+          }
+
+          if (ext.externalTicket?.value && !extractedRefs.some(r => (r.type === 'ATTENDANCE' || r.type === 'PROTOCOL') && r.value === ext.externalTicket.value)) {
+            extractedRefs.push({
+              key: crypto.randomUUID(),
+              type: 'ATTENDANCE',
+              value: ext.externalTicket.value,
+              note: '',
+            });
+          }
+
           return {
             ...current,
             customerName: ext.customerName?.value || current.customerName,
             orderNumber: ext.orderNumber?.value || current.orderNumber,
             externalTicket: ext.externalTicket?.value || current.externalTicket,
+            references: extractedRefs.length > 0 ? extractedRefs : current.references,
             description: ext.description?.value || current.description,
             channelId: matchedChannelId,
             reasonId: matchedReasonId,
@@ -446,8 +597,31 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
                             {info.category}
                           </span>
                         )}
+                        {info.isMasked && (
+                          <span className="sac-masked-badge">
+                            <Lock style={{ width: 10, height: 10 }} /> Mascarado
+                          </span>
+                        )}
                       </div>
-                      <span className="sac-additional-value">{info.value}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                        <span className="sac-additional-value">{info.value}</span>
+                        {info.isMasked && isAdmin && (
+                          <button
+                            type="button"
+                            className="sac-reveal-btn"
+                            disabled={revealingIndex === idx}
+                            onClick={() => handleRevealImportField(idx)}
+                            title="Revelar dado original (somente administradores)"
+                          >
+                            {revealingIndex === idx ? (
+                              <LoaderCircle className="spin" style={{ width: 12, height: 12 }} />
+                            ) : (
+                              <Eye style={{ width: 12, height: 12 }} />
+                            )}
+                            Revelar
+                          </button>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
@@ -499,43 +673,6 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
 
             <label>
               <div className="sac-field-header">
-                <span>Número do pedido *</span>
-                <ConfidenceTag field={extractedData?.orderNumber} />
-              </div>
-              <input data-field="orderNumber" value={form.orderNumber} maxLength={40} onChange={event => change('orderNumber', event.target.value)} aria-invalid={Boolean(errors.orderNumber)} />
-              <SnippetHint field={extractedData?.orderNumber} />
-              {extractedData?.invoiceNumber?.value && (
-                <div className="sac-invoice-hint" title="Número da Nota Fiscal identificado no documento. Mantido como metadado fiscal sem converter para pedido.">
-                  <Info style={{ width: 12, height: 12 }} />
-                  <span>NF detectada: <strong>{extractedData.invoiceNumber.value}</strong> (metadado fiscal)</span>
-                </div>
-              )}
-              {extractedData?.orderNumber?.candidateOrderNumbers && extractedData.orderNumber.candidateOrderNumbers.length > 1 && (
-                <div className="sac-candidates-helper">
-                  <span>Outros pedidos detectados:</span>
-                  {extractedData.orderNumber.candidateOrderNumbers.map((num: string) => (
-                    <button key={num} type="button" className="sac-candidate-chip" onClick={() => change('orderNumber', num)}>
-                      {num}
-                    </button>
-                  ))}
-                </div>
-              )}
-              {errors.orderNumber && <small>{errors.orderNumber}</small>}
-            </label>
-
-            <label>
-              <div className="sac-field-header">
-                <span>Ticket ou protocolo externo</span>
-                <ConfidenceTag field={extractedData?.externalTicket} />
-              </div>
-              <input data-field="externalTicket" value={form.externalTicket} maxLength={80} onBlur={checkExternal} onChange={event => change('externalTicket', event.target.value)} aria-invalid={Boolean(errors.externalTicket)} />
-              <SnippetHint field={extractedData?.externalTicket} />
-              {errors.externalTicket && <small>{errors.externalTicket}</small>}
-              {duplicateExternal && <span className="sac-duplicate-warning"><span>Possível duplicidade encontrada.</span><span className="sac-duplicate-confirm"><input type="checkbox" aria-label="Confirmar possível duplicidade" checked={allowDuplicate} onChange={event => setAllowDuplicate(event.target.checked)} />Confirmo que desejo continuar.</span></span>}
-            </label>
-
-            <label>
-              <div className="sac-field-header">
                 <span>Canal *</span>
                 <ConfidenceTag field={extractedData?.channel} />
               </div>
@@ -559,6 +696,131 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
 
             {editing && <label>Código interno<input value={record?.ticket ?? ''} disabled /></label>}
           </div></fieldset>
+
+          <fieldset className="sac-references-section">
+            <legend className="sac-references-header">
+              <span>Referências do caso (opcional)</span>
+              <button
+                type="button"
+                className="secondary"
+                onClick={addReference}
+                style={{ fontSize: '12px', padding: '4px 10px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+              >
+                <Plus style={{ width: 14, height: 14 }} /> Adicionar referência
+              </button>
+            </legend>
+
+            <p style={{ margin: '4px 0 10px', fontSize: 'var(--font-size-secondary)', color: 'var(--color-text-secondary)' }}>
+              Associe identificadores multissetoriais ao caso (pedido, nota fiscal, OS, protocolo, etc.). Opcional para setores que não operam por pedido.
+            </p>
+
+            {/* Candidate suggestions from document import */}
+            {extractedData && (extractedData.orderNumber?.candidateOrderNumbers?.length > 0 || extractedData.invoiceNumber?.value) && (
+              <div className="sac-candidates-helper" style={{ marginBottom: 10 }}>
+                <span>Sugestões detectadas no documento:</span>
+                {extractedData.orderNumber?.candidateOrderNumbers?.map((num: string) => {
+                  const alreadyAdded = form.references.some(r => r.value === num);
+                  if (alreadyAdded) return null;
+                  return (
+                    <button
+                      key={num}
+                      type="button"
+                      className="sac-candidate-chip"
+                      onClick={() => setForm(curr => ({
+                        ...curr,
+                        references: [...curr.references, { key: crypto.randomUUID(), type: 'ORDER', value: num, note: '' }]
+                      }))}
+                    >
+                      + Pedido: {num}
+                    </button>
+                  );
+                })}
+                {extractedData.invoiceNumber?.value && !form.references.some(r => r.type === 'INVOICE' && r.value === extractedData.invoiceNumber.value) && (
+                  <button
+                    type="button"
+                    className="sac-candidate-chip"
+                    onClick={() => setForm(curr => ({
+                      ...curr,
+                      references: [...curr.references, { key: crypto.randomUUID(), type: 'INVOICE', value: extractedData.invoiceNumber.value, note: 'Nota fiscal' }]
+                    }))}
+                  >
+                    + NF: {extractedData.invoiceNumber.value}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {form.references.length === 0 ? (
+              <div className="sac-references-empty">
+                Nenhuma referência cadastrada. Caso este chamado não utilize pedido ou nota fiscal, você pode prosseguir sem adicionar referências.
+              </div>
+            ) : (
+              <div className="sac-references-list">
+                {form.references.map((ref, index) => (
+                  <div key={ref.key || index} className="sac-reference-row">
+                    <div className="sac-reference-col">
+                      <label>Tipo de referência</label>
+                      <select
+                        value={ref.type}
+                        onChange={e => updateReference(index, { type: e.target.value as SacReferenceType })}
+                      >
+                        {Object.entries(SAC_REFERENCE_LABELS).map(([val, label]) => (
+                          <option key={val} value={val}>{label}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="sac-reference-col">
+                      <label>Número ou identificador *</label>
+                      <input
+                        placeholder="Ex.: 123456 ou NF-987"
+                        value={ref.value}
+                        maxLength={80}
+                        onChange={e => updateReference(index, { value: e.target.value })}
+                        onBlur={checkExternal}
+                      />
+                    </div>
+
+                    <div className="sac-reference-col">
+                      <label>Observação / detalhe (opcional)</label>
+                      <input
+                        placeholder="Ex.: Loja centro, canal B2B"
+                        value={ref.note}
+                        maxLength={200}
+                        onChange={e => updateReference(index, { note: e.target.value })}
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      title="Remover referência"
+                      aria-label="Remover referência"
+                      onClick={() => removeReference(index)}
+                      style={{ height: '36px', alignSelf: 'flex-end', marginBottom: '2px' }}
+                    >
+                      <Trash2 style={{ width: 16, height: 16 }} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {duplicateExternal && (
+              <span className="sac-duplicate-warning" style={{ marginTop: '8px', display: 'flex' }}>
+                <span>Possível duplicidade encontrada com referência externa.</span>
+                <span className="sac-duplicate-confirm">
+                  <input
+                    type="checkbox"
+                    aria-label="Confirmar possível duplicidade"
+                    checked={allowDuplicate}
+                    onChange={event => setAllowDuplicate(event.target.checked)}
+                  />
+                  Confirmo que desejo continuar.
+                </span>
+              </span>
+            )}
+          </fieldset>
 
           <fieldset><legend>2. Classificação da ocorrência</legend><div className="sac-form-grid">
             <label>
@@ -643,5 +905,52 @@ export function SacRecordForm({ recordId, onClose, onSaved, onOpenCatalogs }: { 
       onClose();
     }} />}
     {removingItem !== null && <Confirm title="Remover item?" text="As informações preenchidas neste item serão descartadas." action="Remover item" onCancel={() => setRemovingItem(null)} onConfirm={() => removeItem(removingItem)} />}
+    {copySensitiveConfirm && (
+      <div className="overlay sac-confirm-layer">
+        <section className="modal sac-confirm" role="alertdialog" aria-modal="true" aria-labelledby="sac-sensitive-confirm-title">
+          <header className="modal-head">
+            <div>
+              <h2 id="sac-sensitive-confirm-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <ShieldAlert style={{ color: 'var(--color-warning)' }} />
+                Copiar dados sensíveis para observação?
+              </h2>
+              <p>
+                Os campos adicionais extraídos contêm dados sensíveis (SENSITIVE). Como administrador, você pode confirmar a inclusão desses dados na observação interna ou copiar apenas os campos seguros não sensíveis.
+              </p>
+            </div>
+          </header>
+          <footer className="form-footer" style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => setCopySensitiveConfirm(false)}
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                executeCopyAdditionalInfo(false);
+                setCopySensitiveConfirm(false);
+              }}
+            >
+              Copiar sem dados sensíveis
+            </button>
+            <button
+              type="button"
+              className="sac-danger-action"
+              onClick={() => {
+                executeCopyAdditionalInfo(true);
+                setCopySensitiveConfirm(false);
+              }}
+            >
+              Confirmar e incluir sensíveis
+            </button>
+          </footer>
+        </section>
+      </div>
+    )}
   </div>;
 }
+
