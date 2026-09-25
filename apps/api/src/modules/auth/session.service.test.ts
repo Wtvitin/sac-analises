@@ -40,7 +40,9 @@ describe('sessões revogáveis e rotação', () => {
     await expect(rotateSession('inactive-refresh-token')).resolves.toEqual({ ok: false });
     mock.database.authSession.findUnique.mockResolvedValueOnce({ ...current, tokenVersion: 1 });
     await expect(rotateSession('stale-refresh-token')).resolves.toEqual({ ok: false });
-    expect(mock.database.authSession.updateMany).toHaveBeenCalledTimes(2);
+    mock.database.authSession.findUnique.mockResolvedValueOnce({ ...current, user: { ...user, deletedAt: new Date() } });
+    await expect(rotateSession('deleted-refresh-token')).resolves.toEqual({ ok: false });
+    expect(mock.database.authSession.updateMany).toHaveBeenCalledTimes(3);
   });
 
   it('revoga todas as sessões e registra auditoria sem tokens', async () => {

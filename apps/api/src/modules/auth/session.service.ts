@@ -13,6 +13,7 @@ const sessionUserSelect = {
   active: true,
   approvedAt: true,
   rejectedAt: true,
+  deletedAt: true,
   tokenVersion: true,
   timezone: true,
   lastLoginAt: true,
@@ -66,7 +67,7 @@ export async function rotateSession(refreshToken: string | undefined): Promise<R
       await tx.authSession.updateMany({ where: { familyId: current.familyId, revokedAt: null }, data: { revokedAt: now } });
       return { ok: false };
     }
-    if (!current.user.active || !current.user.approvedAt || current.user.rejectedAt || current.tokenVersion !== current.user.tokenVersion) {
+    if (!current.user.active || !current.user.approvedAt || current.user.rejectedAt || current.user.deletedAt || current.tokenVersion !== current.user.tokenVersion) {
       await tx.authSession.updateMany({ where: { userId: current.userId, revokedAt: null }, data: { revokedAt: now } });
       return { ok: false };
     }

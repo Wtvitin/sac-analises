@@ -24,5 +24,7 @@ describe('validação imediata de sessão', () => {
     mock.currentSession.mockResolvedValueOnce(null); expect((await run(3)).status).toHaveBeenCalledWith(401);
     mock.currentSession.mockResolvedValueOnce({ id: 'session-1', tokenVersion: 3, user: { id: 'user-1', role: 'ANALYST', active: false, approvedAt: new Date(), rejectedAt: null, tokenVersion: 3 } });
     expect((await run(3)).status).toHaveBeenCalledWith(401);
+    mock.currentSession.mockResolvedValueOnce({ id: 'session-1', tokenVersion: 3, user: { id: 'user-1', role: 'ANALYST', active: false, approvedAt: new Date(), rejectedAt: null, deletedAt: new Date(), tokenVersion: 3 } });
+    expect((await run(3)).status).toHaveBeenCalledWith(401);
   });
 });

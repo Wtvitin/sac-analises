@@ -13,7 +13,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     const payload = jwt.verify(token, process.env.JWT_SECRET ?? '') as TokenPayload;
     if (!payload.sub || !payload.sessionId || !Number.isInteger(payload.version)) throw new Error('invalid payload');
     const session = await currentSession(payload.sessionId, payload.sub); const user = session?.user;
-    if (!user || !user.active || !user.approvedAt || user.rejectedAt || user.tokenVersion !== payload.version) throw new Error('invalid account state');
+    if (!user || !user.active || !user.approvedAt || user.rejectedAt || user.deletedAt || user.tokenVersion !== payload.version) throw new Error('invalid account state');
     if (session!.tokenVersion !== payload.version) throw new Error('invalid session version');
 
     if (user.mustChangePassword) {

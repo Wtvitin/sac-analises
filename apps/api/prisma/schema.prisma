@@ -62,6 +62,7 @@ enum AdminAuditType {
   PROVISIONAL_PASSWORD_GENERATED
   PROVISIONAL_PASSWORD_RESENT
   PASSWORD_RESET_REQUESTED
+  USER_DELETED
 }
 
 enum SacReferenceType {
@@ -97,6 +98,7 @@ model User {
   tokenVersion  Int           @default(0)
   lastLoginAt   DateTime?
   timezone      String        @default("America/Sao_Paulo")
+  deletedAt     DateTime?
   assignedCases SacRecord[]   @relation("Assignee")
   createdCases  SacRecord[]   @relation("Creator")
   comments      Comment[]
@@ -113,6 +115,7 @@ model User {
 
   @@index([active, approvedAt, rejectedAt])
   @@index([role, active, approvedAt])
+  @@index([deletedAt])
 }
 
 model Customer {
@@ -362,8 +365,8 @@ model AdminAudit {
   type         AdminAuditType
   actorId      String?
   actor        User?          @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
-  targetUserId String
-  targetUser   User           @relation("AuditTarget", fields: [targetUserId], references: [id])
+  targetUserId String?
+  targetUser   User?          @relation("AuditTarget", fields: [targetUserId], references: [id], onDelete: SetNull)
   justification String?
   metadata     Json?
   createdAt    DateTime       @default(now())

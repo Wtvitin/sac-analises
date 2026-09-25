@@ -190,7 +190,7 @@ export async function listSacRecords(input: ListInput, now = new Date()) {
   const [foundItems, total, owners, reasons, statusCounts, overdue, dueToday, nearDue, stale, unassigned, attentionTotal] = await prisma.$transaction([
     prisma.sacRecord.findMany({ where: findWhere, skip: findSkip, take: findTake, orderBy, include: { customer: true, reason: true, subreason: true, references: { orderBy: { createdAt: 'asc' } }, assignee: { select: { id: true, name: true } } } }),
     prisma.sacRecord.count({ where }),
-    prisma.user.findMany({ where: { assignedCases: { some: { archivedAt: null } } }, select: { name: true }, orderBy: { name: 'asc' } }),
+    prisma.user.findMany({ where: { assignedCases: { some: { archivedAt: null } }, deletedAt: null }, select: { name: true }, orderBy: { name: 'asc' } }),
     prisma.reason.findMany({ select: { name: true }, orderBy: { name: 'asc' } }),
     prisma.sacRecord.groupBy({ by: ['status'], where: { archivedAt: null }, _count: true, orderBy: { status: 'asc' } }),
     prisma.sacRecord.count({ where: { ...openWhere, dueAt: { lt: boundaries.todayStart } } }),

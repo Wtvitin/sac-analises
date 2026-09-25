@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Filter, LoaderCircle, MoreHorizontal, Plus, Search, ShieldCheck, UserCheck, Users, X } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Filter, LoaderCircle, MoreHorizontal, Pencil, Plus, Search, ShieldCheck, Trash2, UserCheck, Users, X } from 'lucide-react';
 import { apiRequest } from './api';
 
 type Role = 'ADMIN' | 'ANALYST' | 'VIEWER';
 type TeamUser = { id: string; name: string; email: string; role: Role; active: boolean; approvedAt: string | null; rejectedAt: string | null; lastLoginAt: string | null; createdAt: string; openAssignedCases: number; mustChangePassword?: boolean };
 type TeamPageData = { items: TeamUser[]; total: number; page: number; pageSize: number };
 type Summary = { activeUsers: number; pendingApproval: number; analysts: number; unassignedCases: number };
-type Action = 'approve' | 'reject' | 'role' | 'deactivate' | 'reactivate' | 'resend-provisional';
+export type EditAction = 'approve' | 'reject' | 'role' | 'resend-provisional';
 type Option = { id: string; name: string };
 type Audit = { id: string; type: string; justification: string | null; createdAt: string; actor: { name: string } | null };
 type Filters = { query: string; role: string; state: string; approval: string; sort: string; order: string };
@@ -17,6 +18,7 @@ const auditLabel: Record<string, string> = {
   ACCESS_APPROVED: 'Acesso aprovado',
   ACCESS_REJECTED: 'Solicitação recusada',
   ROLE_CHANGED: 'Perfil alterado',
+  USER_DELETED: 'Usuário excluído',
   USER_DEACTIVATED: 'Usuário inativado',
   USER_REACTIVATED: 'Usuário reativado',
   CASES_TRANSFERRED: 'Casos redistribuídos',
@@ -27,7 +29,52 @@ const auditLabel: Record<string, string> = {
 };
 const formatDate = (value: string | null) => value ? new Date(value).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : 'Nunca';
 const initials = (name: string) => name.split(/\s+/).map(value => value[0]).slice(0, 2).join('').toUpperCase();
-function accountState(user: TeamUser) {
+export function isUserManagementProtected(user: { id: string; role: Role }, currentUser?: { id: string; role: Role }) {
+  const isSelf = Boolean(currentUser && user.id === currentUser.id);
+  const isOtherAdmin = user.role === 'ADMIN' && !isSelf;
+  return { isSelf, isOtherAdmin, isProtected: isSelf || isOtherAdmin };
+}
+
+export function getAvailableEditActions(user: { approvedAt: string | null; rejectedAt: string | null; active: boolean; mustChangePassword?: boolean }) {
+  const isPreviewPending = !user.approvedAt && Boolean(user.mustChangePassword) && !user.active;
+  const actions: { value: EditAction; label: string }[] = [];
+  if (!user.approvedAt) {
+    actions.push({ value: 'approve', label: isPreviewPending ? 'Tentar aprovação novamente (reenviar por e-mail)' : 'Aprovar acesso' });
+    actions.push({ value: 'reject', label: 'Recusar solicitação' });
+  }
+  if (user.approvedAt && user.active) {
+    actions.push({ value: 'resend-provisional', label: 'Reenviar senha provisória' });
+  }
+  if (user.approvedAt) {
+    actions.push({ value: 'role', label: 'Alterar perfil' });
+  }
+  return actions;
+}
+
+export const getAvailableModalActions = getAvailableEditActions;
+
+export function canSubmitDelete({
+  confirmed,
+  openAssignedCases,
+  strategy,
+  transferToUserId,
+  saving = false,
+}: {
+  confirmed: boolean;
+  openAssignedCases: number;
+  strategy: 'transfer' | 'unassigned';
+  transferToUserId?: string;
+  saving?: boolean;
+}) {
+  if (saving) return false;
+  if (!confirmed) return false;
+  if (openAssignedCases > 0 && strategy === 'transfer' && !transferToUserId) {
+    return false;
+  }
+  return true;
+}
+
+export function accountState(user: TeamUser) {
   if (user.rejectedAt) return { key: 'rejected', label: 'Recusado' };
   if (!user.approvedAt) {
     if (user.mustChangePassword && !user.active) {
@@ -38,6 +85,123 @@ function accountState(user: TeamUser) {
   if (!user.active) return { key: 'inactive', label: 'Inativo' };
   if (user.mustChangePassword) return { key: 'provisional', label: 'Primeiro acesso pendente' };
   return { key: 'active', label: 'Ativo' };
+}
+
+export function TeamRowActions({
+  user,
+  onEdit,
+  onDelete,
+}: {
+  user: TeamUser;
+  onEdit: (user: TeamUser) => void;
+  onDelete: (user: TeamUser) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const updatePosition = () => {
+    if (!triggerRef.current) return;
+    const rect = triggerRef.current.getBoundingClientRect();
+    const menuWidth = 176;
+    const left = Math.max(8, Math.min(window.innerWidth - menuWidth - 8, rect.right - menuWidth));
+    const top = rect.bottom + 4;
+    setPosition({ top, left });
+  };
+
+  const toggle = () => {
+    if (!open) updatePosition();
+    setOpen(value => !value);
+  };
+
+  const close = () => {
+    setOpen(false);
+    requestAnimationFrame(() => triggerRef.current?.focus());
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const handleOutside = (event: MouseEvent) => {
+      if (
+        triggerRef.current?.contains(event.target as Node) ||
+        menuRef.current?.contains(event.target as Node)
+      ) {
+        return;
+      }
+      setOpen(false);
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close();
+    };
+    const handleScroll = () => {
+      setOpen(false);
+    };
+    window.addEventListener('mousedown', handleOutside);
+    window.addEventListener('keydown', handleKey);
+    window.addEventListener('scroll', handleScroll, true);
+    window.addEventListener('resize', handleScroll);
+    return () => {
+      window.removeEventListener('mousedown', handleOutside);
+      window.removeEventListener('keydown', handleKey);
+      window.removeEventListener('scroll', handleScroll, true);
+      window.removeEventListener('resize', handleScroll);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="team-row-actions-trigger"
+        aria-label={`Gerenciar ${user.name}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={event => {
+          event.stopPropagation();
+          toggle();
+        }}
+      >
+        <MoreHorizontal />
+      </button>
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="team-row-actions-menu"
+            role="menu"
+            aria-label={`Ações de ${user.name}`}
+            style={position}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onEdit(user);
+              }}
+            >
+              <Pencil aria-hidden="true" />
+              Editar
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="team-action-danger"
+              onClick={() => {
+                setOpen(false);
+                onDelete(user);
+              }}
+            >
+              <Trash2 aria-hidden="true" />
+              Excluir usuário
+            </button>
+          </div>,
+          document.body
+        )}
+    </>
+  );
 }
 
 export function TeamManagementPage({
@@ -51,6 +215,7 @@ export function TeamManagementPage({
   onRequestHandled: () => void;
   onMessage: (message: string) => void;
 }) {
+  const isAdmin = currentUser?.role === 'ADMIN';
   const [filters, setFilters] = useState(initialFilters);
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [page, setPage] = useState(1);
@@ -59,7 +224,8 @@ export function TeamManagementPage({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [selected, setSelected] = useState<TeamUser | null>(null);
+  const [editingUser, setEditingUser] = useState<TeamUser | null>(null);
+  const [deletingUser, setDeletingUser] = useState<TeamUser | null>(null);
   const [addUserOpen, setAddUserOpen] = useState(false);
   const [reload, setReload] = useState(0);
   const openerRef = useRef<HTMLElement | null>(null);
@@ -93,15 +259,44 @@ export function TeamManagementPage({
   }, [filtersOpen]);
 
   const updateFilter = (key: keyof Filters, value: string) => { setFilters(current => ({ ...current, [key]: value })); setPage(1); };
-  const openUser = (user: TeamUser) => {
-    // Não permite abrir modal de alteração para a própria conta nem para outro administrador
+
+  const openEdit = (user: TeamUser) => {
+    if (!isAdmin) return;
     if (currentUser && user.id === currentUser.id) return;
     if (user.role === 'ADMIN') return;
     openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setSelected(user);
+    setEditingUser(user);
   };
-  const closeUser = () => { setSelected(null); requestAnimationFrame(() => openerRef.current?.focus()); };
-  const changed = (message: string) => { closeUser(); setReload(value => value + 1); onMessage(message); };
+
+  const closeEdit = () => {
+    setEditingUser(null);
+    requestAnimationFrame(() => openerRef.current?.focus());
+  };
+
+  const handleEditChanged = (message: string) => {
+    closeEdit();
+    setReload(value => value + 1);
+    onMessage(message);
+  };
+
+  const openDelete = (user: TeamUser) => {
+    if (!isAdmin) return;
+    if (currentUser && user.id === currentUser.id) return;
+    if (user.role === 'ADMIN') return;
+    openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setDeletingUser(user);
+  };
+
+  const closeDelete = () => {
+    setDeletingUser(null);
+    requestAnimationFrame(() => openerRef.current?.focus());
+  };
+
+  const handleDeleteChanged = (message: string) => {
+    closeDelete();
+    setReload(value => value + 1);
+    onMessage(message);
+  };
 
   return <>
     <header className="page-header page-title page-title-row">
@@ -129,10 +324,12 @@ export function TeamManagementPage({
           <input value={filters.query} onChange={event => updateFilter('query', event.target.value)} placeholder="Buscar nome ou e-mail" aria-label="Buscar usuário" />
         </div>
         <div className="team-card-actions">
-          <button type="button" className="primary" onClick={() => setAddUserOpen(true)}>
-            <Plus aria-hidden="true" />
-            <span>Adicionar usuário</span>
-          </button>
+          {isAdmin && (
+            <button type="button" className="primary" onClick={() => setAddUserOpen(true)}>
+              <Plus aria-hidden="true" />
+              <span>Adicionar usuário</span>
+            </button>
+          )}
           <button ref={filterTriggerRef} className="secondary team-filter-trigger" aria-expanded={filtersOpen} aria-controls="team-filters" onClick={() => setFiltersOpen(value => !value)}>
             <Filter />
             Filtros
@@ -146,7 +343,7 @@ export function TeamManagementPage({
           <button aria-label="Fechar filtros" onClick={() => setFiltersOpen(false)}><X /></button>
         </div>
         <label>Perfil<select value={filters.role} onChange={event => updateFilter('role', event.target.value)}><option value="all">Todos</option><option value="ADMIN">Administrador</option><option value="ANALYST">Analista</option><option value="VIEWER">Consulta</option></select></label>
-        <label>Estado<select value={filters.state} onChange={event => updateFilter('state', event.target.value)}><option value="all">Todos</option><option value="active">Ativos</option><option value="inactive">Inativos</option></select></label>
+        <label>Estado<select value={filters.state} onChange={event => updateFilter('state', event.target.value)}><option value="all">Todos</option><option value="active">Ativos</option></select></label>
         <label>Aprovação<select value={filters.approval} onChange={event => updateFilter('approval', event.target.value)}><option value="all">Todas</option><option value="pending">Aguardando aprovação</option><option value="approved">Aprovadas</option><option value="rejected">Recusadas</option></select></label>
         <label>Ordenação<select value={filters.sort} onChange={event => updateFilter('sort', event.target.value)}><option value="name">Nome</option><option value="createdAt">Cadastro</option><option value="lastLoginAt">Último acesso</option><option value="role">Perfil</option></select></label>
         <label>Direção<select value={filters.order} onChange={event => updateFilter('order', event.target.value)}><option value="asc">Crescente</option><option value="desc">Decrescente</option></select></label>
@@ -188,8 +385,7 @@ export function TeamManagementPage({
               <tbody>
                 {data.items.map(user => {
                   const state = accountState(user);
-                  const isSelf = currentUser && user.id === currentUser.id;
-                  const isOtherAdmin = user.role === 'ADMIN' && !isSelf;
+                  const { isSelf, isOtherAdmin } = isUserManagementProtected(user, currentUser);
 
                   return (
                     <tr key={user.id}>
@@ -214,10 +410,14 @@ export function TeamManagementPage({
                           <span className="team-self-badge">Sua conta</span>
                         ) : isOtherAdmin ? (
                           <span className="team-protected-badge" title="Administrador protegido contra alterações">Administrador</span>
+                        ) : !isAdmin ? (
+                          <span className="team-protected-badge" title="Apenas administradores podem gerenciar usuários">Somente leitura</span>
                         ) : (
-                          <button className="icon-btn" aria-label={`Gerenciar ${user.name}`} onClick={() => openUser(user)}>
-                            <MoreHorizontal />
-                          </button>
+                          <TeamRowActions
+                            user={user}
+                            onEdit={openEdit}
+                            onDelete={openDelete}
+                          />
                         )}
                       </td>
                     </tr>
@@ -230,8 +430,7 @@ export function TeamManagementPage({
           <div className="team-mobile-list">
             {data.items.map(user => {
               const state = accountState(user);
-              const isSelf = currentUser && user.id === currentUser.id;
-              const isOtherAdmin = user.role === 'ADMIN' && !isSelf;
+              const { isSelf, isOtherAdmin } = isUserManagementProtected(user, currentUser);
 
               return (
                 <article key={user.id}>
@@ -247,10 +446,14 @@ export function TeamManagementPage({
                       <span className="team-self-badge">Sua conta</span>
                     ) : isOtherAdmin ? (
                       <span className="team-protected-badge" title="Administrador protegido">Administrador</span>
+                    ) : !isAdmin ? (
+                      <span className="team-protected-badge" title="Apenas administradores podem gerenciar usuários">Somente leitura</span>
                     ) : (
-                      <button className="icon-btn" aria-label={`Gerenciar ${user.name}`} onClick={() => openUser(user)}>
-                        <MoreHorizontal />
-                      </button>
+                      <TeamRowActions
+                        user={user}
+                        onEdit={openEdit}
+                        onDelete={openDelete}
+                      />
                     )}
                   </header>
                   <div>
@@ -280,7 +483,20 @@ export function TeamManagementPage({
       )}
     </section>
 
-    {selected && <UserManagementModal user={selected} onClose={closeUser} onChanged={changed} />}
+    {editingUser && (
+      <EditUserModal
+        user={editingUser}
+        onClose={closeEdit}
+        onChanged={handleEditChanged}
+      />
+    )}
+    {deletingUser && (
+      <DeleteUserModal
+        user={deletingUser}
+        onClose={closeDelete}
+        onDeleted={handleDeleteChanged}
+      />
+    )}
     {addUserOpen && (
       <AddUserModal
         onClose={() => setAddUserOpen(false)}
@@ -402,25 +618,29 @@ function AddUserModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
   );
 }
 
-function UserManagementModal({ user, onClose, onChanged }: { user: TeamUser; onClose: () => void; onChanged: (message: string) => void }) {
+export function EditUserModal({
+  user,
+  onClose,
+  onChanged,
+}: {
+  user: TeamUser;
+  onClose: () => void;
+  onChanged: (message: string) => void;
+}) {
   const isPreviewPending = !user.approvedAt && Boolean(user.mustChangePassword) && !user.active;
-  const initialAction: Action = !user.approvedAt && !user.rejectedAt ? 'approve' : user.active ? 'role' : user.approvedAt ? 'reactivate' : 'approve';
-  const [action, setAction] = useState<Action>(initialAction);
-  // Inicializar o campo Perfil com o perfil real do usuário selecionado
-  const [role, setRole] = useState<Role>(user.role);
+  const availableActions = getAvailableEditActions(user);
+  const defaultAction: EditAction = availableActions[0]?.value ?? (!user.approvedAt && !user.rejectedAt ? 'approve' : 'role');
+  const [action, setAction] = useState<EditAction>(defaultAction);
+  const [role, setRole] = useState<Role>(user.role === 'ADMIN' ? 'ANALYST' : user.role);
   const [reason, setReason] = useState('');
-  const [strategy, setStrategy] = useState<'transfer' | 'unassigned'>('transfer');
-  const [transferTo, setTransferTo] = useState('');
   const [confirmed, setConfirmed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [assignees, setAssignees] = useState<Option[]>([]);
   const [audits, setAudits] = useState<Audit[]>([]);
   const modalRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     apiRequest<Audit[]>(`/users/${user.id}/audits`).then(setAudits).catch(() => undefined);
-    if (user.openAssignedCases) apiRequest<Option[]>('/users/assignable').then(items => setAssignees(items.filter(item => item.id !== user.id))).catch(() => undefined);
     const focusable = () => Array.from(modalRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled),select:not(:disabled),textarea:not(:disabled),input:not(:disabled),summary') ?? []).filter(item => item.getClientRects().length > 0);
     requestAnimationFrame(() => focusable()[0]?.focus());
     const key = (event: KeyboardEvent) => {
@@ -439,13 +659,10 @@ function UserManagementModal({ user, onClose, onChanged }: { user: TeamUser; onC
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
-  }, [user.id, user.openAssignedCases, onClose]);
+  }, [user.id, onClose]);
 
-  // Exibir justificativa somente nas ações que efetivamente a exigem
   const needsReason =
     action === 'reject' ||
-    action === 'deactivate' ||
-    action === 'reactivate' ||
     (action === 'role' && user.role === 'ANALYST' && role === 'VIEWER');
 
   const submit = async (event: FormEvent) => {
@@ -470,15 +687,6 @@ function UserManagementModal({ user, onClose, onChanged }: { user: TeamUser; onC
         path = `/users/${user.id}/role`;
         method = 'PATCH';
         body = { role, justification: needsReason ? reason : undefined };
-      } else if (action === 'deactivate') {
-        path = `/users/${user.id}/deactivate`;
-        body = {
-          justification: reason,
-          ...(user.openAssignedCases ? { strategy, transferToUserId: strategy === 'transfer' ? transferTo : undefined, confirmUnassigned: strategy === 'unassigned' } : {})
-        };
-      } else if (action === 'reactivate') {
-        path = `/users/${user.id}/reactivate`;
-        body = { justification: reason };
       }
 
       const res = await apiRequest<{ emailDelivery?: { delivered: boolean; statusMessage: string } }>(
@@ -500,11 +708,7 @@ function UserManagementModal({ user, onClose, onChanged }: { user: TeamUser; onC
             ? 'Envio aceito pelo servidor de e-mail.'
             : action === 'reject'
             ? 'Solicitação recusada.'
-            : action === 'role'
-            ? 'Perfil atualizado.'
-            : action === 'deactivate'
-            ? 'Usuário inativado.'
-            : 'Usuário reativado.'
+            : 'Perfil atualizado.'
         );
       }
     } catch (reasonError) {
@@ -516,13 +720,13 @@ function UserManagementModal({ user, onClose, onChanged }: { user: TeamUser; onC
 
   return (
     <div className="overlay team-modal-overlay" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
-      <section ref={modalRef} className="modal team-user-modal" role="dialog" aria-modal="true" aria-labelledby="manage-user-title">
+      <section ref={modalRef} className="modal team-user-modal" role="dialog" aria-modal="true" aria-labelledby="edit-user-title">
         <header className="modal-head">
           <div>
-            <h2 id="manage-user-title">Gerenciar usuário</h2>
+            <h2 id="edit-user-title">Editar usuário</h2>
             <p>{user.name} · {user.email}</p>
           </div>
-          <button className="icon-btn" aria-label="Fechar gestão do usuário" onClick={onClose}>
+          <button className="icon-btn" aria-label="Fechar edição do usuário" onClick={onClose}>
             <X />
           </button>
         </header>
@@ -533,7 +737,7 @@ function UserManagementModal({ user, onClose, onChanged }: { user: TeamUser; onC
               <select
                 value={action}
                 onChange={event => {
-                  setAction(event.target.value as Action);
+                  setAction(event.target.value as EditAction);
                   setConfirmed(false);
                   setError('');
                 }}
@@ -542,8 +746,6 @@ function UserManagementModal({ user, onClose, onChanged }: { user: TeamUser; onC
                 {!user.approvedAt && <option value="reject">Recusar solicitação</option>}
                 {user.approvedAt && user.active && <option value="resend-provisional">Reenviar senha provisória</option>}
                 {user.approvedAt && <option value="role">Alterar perfil</option>}
-                {user.active && <option value="deactivate">Inativar</option>}
-                {!user.active && user.approvedAt && <option value="reactivate">Reativar</option>}
               </select>
             </label>
 
@@ -590,29 +792,6 @@ function UserManagementModal({ user, onClose, onChanged }: { user: TeamUser; onC
               </label>
             )}
 
-            {action === 'deactivate' && user.openAssignedCases > 0 && (
-              <fieldset>
-                <legend>Destino de {user.openAssignedCases} casos abertos</legend>
-                <label>
-                  <input type="radio" checked={strategy === 'transfer'} onChange={() => setStrategy('transfer')} />
-                  Transferir para outro responsável
-                </label>
-                {strategy === 'transfer' && (
-                  <label>
-                    Responsável
-                    <select required value={transferTo} onChange={event => setTransferTo(event.target.value)}>
-                      <option value="">Selecione</option>
-                      {assignees.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}
-                    </select>
-                  </label>
-                )}
-                <label>
-                  <input type="radio" checked={strategy === 'unassigned'} onChange={() => setStrategy('unassigned')} />
-                  Deixar sem responsável
-                </label>
-              </fieldset>
-            )}
-
             <label className="team-confirm">
               <input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />
               Confirmo esta alteração e seus efeitos imediatos.
@@ -649,3 +828,237 @@ function UserManagementModal({ user, onClose, onChanged }: { user: TeamUser; onC
     </div>
   );
 }
+
+export function DeleteUserModal({
+  user,
+  onClose,
+  onDeleted,
+}: {
+  user: TeamUser;
+  onClose: () => void;
+  onDeleted: (message: string) => void;
+}) {
+  const [strategy, setStrategy] = useState<'transfer' | 'unassigned'>('transfer');
+  const [transferTo, setTransferTo] = useState('');
+  const [reason, setReason] = useState('');
+  const [confirmed, setConfirmed] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [assignees, setAssignees] = useState<Option[]>([]);
+  const [audits, setAudits] = useState<Audit[]>([]);
+  const modalRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    apiRequest<Audit[]>(`/users/${user.id}/audits`).then(setAudits).catch(() => undefined);
+    if (user.openAssignedCases > 0) {
+      apiRequest<Option[]>('/users/assignable')
+        .then(items => setAssignees(items.filter(item => item.id !== user.id)))
+        .catch(() => undefined);
+    }
+    const focusable = () =>
+      Array.from(
+        modalRef.current?.querySelectorAll<HTMLElement>(
+          'button:not(:disabled),select:not(:disabled),textarea:not(:disabled),input:not(:disabled),summary'
+        ) ?? []
+      ).filter(item => item.getClientRects().length > 0);
+    requestAnimationFrame(() => focusable()[0]?.focus());
+    const key = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const items = focusable();
+      const first = items[0];
+      const last = items.at(-1);
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  }, [user.id, user.openAssignedCases, onClose]);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!canSubmitDelete({ confirmed, openAssignedCases: user.openAssignedCases, strategy, transferToUserId: transferTo, saving })) {
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      const body = {
+        justification: reason.trim() || undefined,
+        ...(user.openAssignedCases > 0
+          ? {
+              strategy,
+              transferToUserId: strategy === 'transfer' ? transferTo : undefined,
+              confirmUnassigned: strategy === 'unassigned',
+            }
+          : {}),
+      };
+
+      await apiRequest(`/users/${user.id}/delete`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+
+      onDeleted('Usuário excluído com sucesso.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Não foi possível excluir o usuário.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const canDelete = canSubmitDelete({
+    confirmed,
+    openAssignedCases: user.openAssignedCases,
+    strategy,
+    transferToUserId: transferTo,
+    saving,
+  });
+
+  return (
+    <div
+      className="overlay team-modal-overlay"
+      onMouseDown={event => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        ref={modalRef}
+        className="modal team-user-modal team-delete-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-user-title"
+      >
+        <header className="modal-head">
+          <div>
+            <h2 id="delete-user-title">Excluir usuário</h2>
+            <p>{user.name} · {user.email}</p>
+          </div>
+          <button className="icon-btn" aria-label="Fechar exclusão do usuário" onClick={onClose}>
+            <X />
+          </button>
+        </header>
+        <form onSubmit={submit}>
+          <div className="modal-body">
+            <div className="team-delete-section">
+              <div className="team-delete-warning">
+                <AlertTriangle aria-hidden="true" />
+                <div>
+                  <strong>Atenção aos efeitos da exclusão:</strong>
+                  <p>
+                    A conta sai da Equipe e perde o acesso imediatamente. Quando houver histórico vinculado, casos e auditorias anteriores são preservados de forma íntegra e os dados pessoais são anonimizados.
+                  </p>
+                </div>
+              </div>
+
+              {user.openAssignedCases > 0 ? (
+                <fieldset className="team-delete-cases-fieldset">
+                  <legend>Destino de {user.openAssignedCases} caso(s) aberto(s)</legend>
+                  <p className="team-delete-cases-hint">
+                    Este usuário possui {user.openAssignedCases} caso(s) atribuído(s). Escolha o destino dos casos antes de confirmar a exclusão:
+                  </p>
+                  <label>
+                    <input
+                      type="radio"
+                      name="caseStrategy"
+                      checked={strategy === 'transfer'}
+                      onChange={() => setStrategy('transfer')}
+                    />
+                    Transferir para outro responsável
+                  </label>
+                  {strategy === 'transfer' && (
+                    <label>
+                      Novo responsável
+                      <select
+                        required
+                        value={transferTo}
+                        onChange={event => setTransferTo(event.target.value)}
+                      >
+                        <option value="">Selecione um analista ou administrador</option>
+                        {assignees.map(item => (
+                          <option value={item.id} key={item.id}>
+                            {item.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  <label>
+                    <input
+                      type="radio"
+                      name="caseStrategy"
+                      checked={strategy === 'unassigned'}
+                      onChange={() => setStrategy('unassigned')}
+                    />
+                    Deixar sem responsável
+                  </label>
+                </fieldset>
+              ) : (
+                <p className="team-delete-no-cases">Este usuário não possui casos abertos atribuídos no momento.</p>
+              )}
+
+              <label>
+                Justificativa da exclusão (opcional)
+                <textarea
+                  maxLength={500}
+                  value={reason}
+                  onChange={event => setReason(event.target.value)}
+                  placeholder="Informe o motivo da exclusão para registro na auditoria..."
+                />
+              </label>
+            </div>
+
+            <label className="team-confirm">
+              <input
+                type="checkbox"
+                checked={confirmed}
+                onChange={event => setConfirmed(event.target.checked)}
+              />
+              Confirmo a exclusão desta conta: ela sairá da Equipe com perda imediata de acesso, preservando casos e auditorias anteriores quando houver histórico.
+            </label>
+
+            {error && <p className="inline-error" role="alert">{error}</p>}
+
+            {audits.length > 0 && (
+              <details>
+                <summary>Auditoria recente</summary>
+                <ul className="team-audit-list">
+                  {audits.slice(0, 8).map(item => (
+                    <li key={item.id}>
+                      <strong>{auditLabel[item.type] ?? item.type}</strong>
+                      <span>{formatDate(item.createdAt)}{item.actor ? ` · ${item.actor.name}` : ''}</span>
+                      {item.justification && <small>{item.justification}</small>}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+
+          <footer className="form-footer">
+            <button type="button" className="secondary" onClick={onClose}>
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              className="team-danger-btn"
+              disabled={!canDelete}
+            >
+              {saving ? 'Excluindo...' : 'Excluir usuário'}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+export const UserManagementModal = EditUserModal;

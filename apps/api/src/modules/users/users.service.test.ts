@@ -11,6 +11,7 @@ const mock = vi.hoisted(() => {
       create: vi.fn(),
       update: vi.fn(),
       updateMany: vi.fn(),
+      delete: vi.fn(),
     },
     sacRecord: {
       findMany: vi.fn(),
@@ -18,9 +19,9 @@ const mock = vi.hoisted(() => {
       count: vi.fn(),
     },
     activityLog: { create: vi.fn() },
-    notification: { create: vi.fn() },
+    notification: { create: vi.fn(), deleteMany: vi.fn() },
     adminAudit: { create: vi.fn(), findMany: vi.fn() },
-    authSession: { updateMany: vi.fn() },
+    authSession: { updateMany: vi.fn(), deleteMany: vi.fn() },
     $executeRaw: vi.fn(),
   };
   const transaction = vi.fn(async (input: unknown, _options?: unknown) =>
@@ -38,6 +39,7 @@ import {
   changeUserRole,
   createUser,
   deactivateUser,
+  deleteUser,
   listUsers,
   reactivateUser,
   rejectUser,
@@ -118,6 +120,10 @@ describe('gestão transacional da equipe', () => {
       ).rejects.toMatchObject({ code: 'SELF_ACTION_BLOCKED', status: 403 });
 
       await expect(
+        deleteUser('admin-1', { justification: 'Auto-exclusão.' }, 'admin-1')
+      ).rejects.toMatchObject({ code: 'SELF_ACTION_BLOCKED', status: 403 });
+
+      await expect(
         rejectUser('admin-1', 'Auto-recusa.', 'admin-1')
       ).rejects.toMatchObject({ code: 'SELF_ACTION_BLOCKED', status: 403 });
 
@@ -143,6 +149,10 @@ describe('gestão transacional da equipe', () => {
 
       await expect(
         deactivateUser('admin-2', { justification: 'Tentativa de inativar outro admin.' }, 'admin-1')
+      ).rejects.toMatchObject({ code: 'ADMIN_PROTECTION', status: 403 });
+
+      await expect(
+        deleteUser('admin-2', { justification: 'Tentativa de excluir outro admin.' }, 'admin-1')
       ).rejects.toMatchObject({ code: 'ADMIN_PROTECTION', status: 403 });
 
       await expect(
@@ -365,13 +375,18 @@ describe('gestão transacional da equipe', () => {
     });
   });
 
-  describe('Inativação e Reativação com casos operacionais', () => {
-    it('transfere somente casos abertos, registra histórico e notifica o novo responsável', async () => {
-      mock.database.user.findUnique.mockResolvedValue({ ...publicUser, role: 'ANALYST' });
+  describe('Exclusão de Usuários (com e sem histórico, casos operacionais e descontinuação de reativação)', () => {
+    it('transfere somente casos abertos, anonimiza dados pessoais e credenciais, revoga sessões e registra auditoria para usuário com histórico', async () => {
+      mock.database.user.findUnique.mockResolvedValue({
+        ...publicUser,
+        role: 'ANALYST',
+        _count: { comments: 2, createdCases: 0, activities: 1, assignedCases: 1, attachmentsAuthored: 0, attachmentsDeleted: 0, documentImports: 0, auditsAuthored: 0 },
+      });
       mock.database.sacRecord.findMany.mockResolvedValue([{ id: 'case-1', ticket: 'SAC-1' }]);
       mock.database.user.findFirst.mockResolvedValue({ id: 'analyst-2', name: 'Responsável' });
+      mock.database.sacRecord.count.mockResolvedValue(1);
 
-      await deactivateUser('user-1', { justification: 'Mudança de área.', strategy: 'transfer', transferToUserId: 'analyst-2' }, 'admin-1');
+      const result = await deleteUser('user-1', { justification: 'Mudança de área.', strategy: 'transfer', transferToUserId: 'analyst-2' }, 'admin-1');
 
       expect(mock.database.sacRecord.findMany).toHaveBeenCalledWith(
         expect.objectContaining({ where: expect.objectContaining({ status: { in: ['PENDING', 'IN_PROGRESS'] } }) })
@@ -385,18 +400,298 @@ describe('gestão transacional da equipe', () => {
       expect(mock.database.notification.create).toHaveBeenCalledWith({
         data: expect.objectContaining({ recipientId: 'analyst-2', type: 'ASSIGNEE_CHANGED' }),
       });
+      expect(mock.database.authSession.deleteMany).toHaveBeenCalledWith({
+        where: { userId: 'user-1' },
+      });
       expect(mock.database.user.update).toHaveBeenCalledWith(
-        expect.objectContaining({ data: { active: false, tokenVersion: { increment: 1 } } })
+        expect.objectContaining({
+          data: expect.objectContaining({
+            name: 'Usuário Excluído',
+            active: false,
+            deletedAt: expect.any(Date),
+            mustChangePassword: false,
+            provisionalPasswordHash: null,
+          }),
+        })
       );
+      expect(mock.database.adminAudit.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            type: 'USER_DELETED',
+            metadata: expect.objectContaining({ mode: 'anonymized_history_preserved' }),
+          }),
+        })
+      );
+      expect(result).toMatchObject({ mode: 'anonymized', deleted: true });
     });
 
-    it('reativa conta aprovada sem devolver casos anteriores', async () => {
-      mock.database.user.findUnique.mockResolvedValue({ ...publicUser, role: 'ANALYST', active: false, approvedAt: now, rejectedAt: null });
-      await reactivateUser('user-1', 'Retorno à operação.', 'admin-1');
-      expect(mock.database.user.update).toHaveBeenCalledWith(
-        expect.objectContaining({ data: { active: true, tokenVersion: { increment: 1 } } })
+    it('exclui fisicamente a conta e revoga sessões quando o usuário não possui histórico associado', async () => {
+      mock.database.user.findUnique.mockResolvedValue({
+        ...publicUser,
+        role: 'ANALYST',
+        _count: { comments: 0, createdCases: 0, activities: 0, assignedCases: 0, attachmentsAuthored: 0, attachmentsDeleted: 0, documentImports: 0, auditsAuthored: 0 },
+      });
+      mock.database.sacRecord.findMany.mockResolvedValue([]);
+      mock.database.sacRecord.count.mockResolvedValue(0);
+
+      const result = await deleteUser('user-1', { justification: 'Conta criada por engano.' }, 'admin-1');
+
+      expect(mock.database.authSession.deleteMany).toHaveBeenCalledWith({ where: { userId: 'user-1' } });
+      expect(mock.database.notification.deleteMany).toHaveBeenCalledWith({ where: { recipientId: 'user-1' } });
+      expect(mock.database.user.delete).toHaveBeenCalledWith({ where: { id: 'user-1' } });
+      const auditCall = mock.database.adminAudit.create.mock.calls.find(
+        (call: any[]) => call[0]?.data?.type === 'USER_DELETED'
       );
-      expect(mock.database.sacRecord.update).not.toHaveBeenCalled();
+      expect(auditCall).toBeDefined();
+      const auditData = auditCall![0].data;
+      expect(auditData.targetUserId).toBeNull();
+      expect(auditData.metadata).toMatchObject({
+        mode: 'physical_deletion',
+        deletedUserId: 'user-1',
+        deletedUserRole: 'ANALYST',
+        hasHistory: false,
+      });
+      // Garante ausência total de dados pessoais ou credenciais retidas na auditoria
+      expect(auditData.metadata.deletedUserName).toBeUndefined();
+      expect(auditData.metadata.deletedUserEmail).toBeUndefined();
+      expect(auditData.metadata.password).toBeUndefined();
+      expect(auditData.metadata.passwordHash).toBeUndefined();
+
+      expect(result).toMatchObject({ mode: 'physical', deleted: true, id: 'user-1' });
+    });
+
+    it('preserva conta anonimizada e histórico de auditoria quando o único vínculo histórico é ser alvo de registros em AdminAudit (auditsReceived > 0)', async () => {
+      mock.database.user.findUnique.mockResolvedValue({
+        ...publicUser,
+        id: 'user-audit-target',
+        name: 'Maria Auditoria',
+        email: 'maria.audit@sac.local',
+        role: 'ANALYST',
+        _count: {
+          comments: 0,
+          createdCases: 0,
+          activities: 0,
+          assignedCases: 0,
+          attachmentsAuthored: 0,
+          attachmentsDeleted: 0,
+          documentImports: 0,
+          auditsAuthored: 0,
+          auditsReceived: 2, // Único vínculo histórico: 2 eventos em AdminAudit como alvo
+          approvedUsers: 0,
+        },
+      });
+      mock.database.sacRecord.findMany.mockResolvedValue([]);
+      mock.database.sacRecord.count.mockResolvedValue(0);
+
+      const result = await deleteUser(
+        'user-audit-target',
+        { justification: 'Exclusão com preservação de auditorias recebidas.' },
+        'admin-1'
+      );
+
+      // Não deve sofrer exclusão física para não quebrar nem orfanar os registros de auditoria anteriores
+      expect(mock.database.user.delete).not.toHaveBeenCalled();
+
+      // Atualiza a conta aplicando anonimização LGPD e neutralização de credenciais
+      expect(mock.database.user.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'user-audit-target' },
+          data: expect.objectContaining({
+            name: 'Usuário Excluído',
+            email: expect.stringMatching(/^deleted_user-audit-target_\d+@sac\.local$/),
+            passwordHash: expect.stringMatching(/^EXCLUDED_/),
+            active: false,
+            deletedAt: expect.any(Date),
+            mustChangePassword: false,
+            provisionalPasswordHash: null,
+            passwordResetTokenHash: null,
+          }),
+        })
+      );
+
+      // Evento USER_DELETED registra targetUserId associado, preservando a trilha histórica
+      expect(mock.database.adminAudit.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            type: 'USER_DELETED',
+            targetUserId: 'user-audit-target',
+            metadata: expect.objectContaining({
+              mode: 'anonymized_history_preserved',
+              deletedUserId: 'user-audit-target',
+              hasHistory: true,
+            }),
+          }),
+        })
+      );
+
+      // Metadados não expõem e-mail, nome original nem senhas
+      const auditCall = mock.database.adminAudit.create.mock.calls.find(
+        (call: any[]) => call[0]?.data?.type === 'USER_DELETED' && call[0]?.data?.targetUserId === 'user-audit-target'
+      );
+      expect(auditCall).toBeDefined();
+      expect(auditCall![0].data.metadata.deletedUserName).toBeUndefined();
+      expect(auditCall![0].data.metadata.deletedUserEmail).toBeUndefined();
+      expect(auditCall![0].data.metadata.password).toBeUndefined();
+
+      expect(result).toMatchObject({ mode: 'anonymized', deleted: true });
+    });
+
+    it('exige estratégia de destino quando há casos abertos atribuídos', async () => {
+      mock.database.user.findUnique.mockResolvedValue({
+        ...publicUser,
+        role: 'ANALYST',
+        _count: { comments: 0, createdCases: 0, activities: 0, assignedCases: 1 },
+      });
+      mock.database.sacRecord.findMany.mockResolvedValue([{ id: 'case-1', ticket: 'SAC-1' }]);
+
+      await expect(
+        deleteUser('user-1', {}, 'admin-1')
+      ).rejects.toMatchObject({
+        code: 'CASE_DESTINATION_REQUIRED',
+        status: 422,
+      });
+    });
+
+    it('exige confirmação explícita para deixar casos sem responsável', async () => {
+      mock.database.user.findUnique.mockResolvedValue({
+        ...publicUser,
+        role: 'ANALYST',
+        _count: { comments: 0, createdCases: 0, activities: 0, assignedCases: 1 },
+      });
+      mock.database.sacRecord.findMany.mockResolvedValue([{ id: 'case-1', ticket: 'SAC-1' }]);
+
+      await expect(
+        deleteUser('user-1', { strategy: 'unassigned' }, 'admin-1')
+      ).rejects.toMatchObject({
+        code: 'UNASSIGN_CONFIRMATION_REQUIRED',
+        status: 422,
+      });
+    });
+
+    it('permite deixar casos sem responsável com confirmação explícita', async () => {
+      mock.database.user.findUnique.mockResolvedValue({
+        ...publicUser,
+        role: 'ANALYST',
+        _count: { comments: 1, createdCases: 0, activities: 0, assignedCases: 1, attachmentsAuthored: 0, attachmentsDeleted: 0, documentImports: 0, auditsAuthored: 0 },
+      });
+      mock.database.sacRecord.findMany.mockResolvedValue([{ id: 'case-1', ticket: 'SAC-1' }]);
+      mock.database.sacRecord.count.mockResolvedValue(0);
+
+      const result = await deleteUser('user-1', { strategy: 'unassigned', confirmUnassigned: true }, 'admin-1');
+
+      expect(mock.database.sacRecord.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ assigneeId: null }) })
+      );
+      expect(mock.database.activityLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ eventType: 'CASE_TRANSFERRED' }),
+      });
+      expect(mock.database.authSession.deleteMany).toHaveBeenCalledWith({ where: { userId: 'user-1' } });
+      expect(result).toMatchObject({ mode: 'anonymized', deleted: true });
+    });
+
+    it('impede autoexclusão de administrador (SELF_ACTION_BLOCKED)', async () => {
+      mock.database.user.findUnique.mockResolvedValue({
+        ...publicUser,
+        id: 'admin-1',
+        role: 'ADMIN',
+      });
+
+      await expect(
+        deleteUser('admin-1', {}, 'admin-1')
+      ).rejects.toMatchObject({
+        code: 'SELF_ACTION_BLOCKED',
+        status: 403,
+      });
+    });
+
+    it('impede exclusão de outro administrador (ADMIN_PROTECTION)', async () => {
+      mock.database.user.findUnique.mockResolvedValue({
+        ...publicUser,
+        id: 'admin-2',
+        role: 'ADMIN',
+      });
+
+      await expect(
+        deleteUser('admin-2', {}, 'admin-1')
+      ).rejects.toMatchObject({
+        code: 'ADMIN_PROTECTION',
+        status: 403,
+      });
+    });
+
+    it('rejeita exclusão de usuário inexistente ou já excluído', async () => {
+      mock.database.user.findUnique.mockResolvedValue(null);
+      await expect(deleteUser('user-not-found', {}, 'admin-1')).rejects.toMatchObject({
+        code: 'USER_NOT_FOUND',
+        status: 404,
+      });
+
+      mock.database.user.findUnique.mockResolvedValue({
+        ...publicUser,
+        deletedAt: new Date(),
+      });
+      await expect(deleteUser('user-deleted', {}, 'admin-1')).rejects.toMatchObject({
+        code: 'USER_NOT_FOUND',
+        status: 404,
+      });
+    });
+
+    it('rejeita tentativa de inativação informando a descontinuação do fluxo (DEACTIVATION_DISCONTINUED)', async () => {
+      mock.database.user.findUnique.mockResolvedValue({ ...publicUser, role: 'ANALYST', active: true });
+      await expect(
+        deactivateUser('user-1', { justification: 'Não necessário.' }, 'admin-1')
+      ).rejects.toMatchObject({
+        code: 'DEACTIVATION_DISCONTINUED',
+        status: 410,
+      });
+      expect(mock.database.user.update).not.toHaveBeenCalled();
+    });
+
+    it('impede inativação na própria conta ou em outro administrador', async () => {
+      mock.database.user.findUnique.mockResolvedValue({ ...publicUser, id: 'admin-1', role: 'ADMIN' });
+      await expect(
+        deactivateUser('admin-1', {}, 'admin-1')
+      ).rejects.toMatchObject({
+        code: 'SELF_ACTION_BLOCKED',
+        status: 403,
+      });
+
+      mock.database.user.findUnique.mockResolvedValue({ ...publicUser, id: 'admin-2', role: 'ADMIN' });
+      await expect(
+        deactivateUser('admin-2', {}, 'admin-1')
+      ).rejects.toMatchObject({
+        code: 'ADMIN_PROTECTION',
+        status: 403,
+      });
+    });
+
+    it('rejeita tentativa de reativação informando a descontinuação do fluxo (REACTIVATION_DISCONTINUED)', async () => {
+      mock.database.user.findUnique.mockResolvedValue({ ...publicUser, role: 'ANALYST', active: false, approvedAt: now, rejectedAt: null });
+      await expect(
+        reactivateUser('user-1', 'Retorno à operação.', 'admin-1')
+      ).rejects.toMatchObject({
+        code: 'REACTIVATION_DISCONTINUED',
+        status: 410,
+      });
+      expect(mock.database.user.update).not.toHaveBeenCalled();
+    });
+
+    it('impede reativação na própria conta ou em outro administrador', async () => {
+      mock.database.user.findUnique.mockResolvedValue({ ...publicUser, id: 'admin-1', role: 'ADMIN' });
+      await expect(
+        reactivateUser('admin-1', 'Motivo', 'admin-1')
+      ).rejects.toMatchObject({
+        code: 'SELF_ACTION_BLOCKED',
+        status: 403,
+      });
+
+      mock.database.user.findUnique.mockResolvedValue({ ...publicUser, id: 'admin-2', role: 'ADMIN' });
+      await expect(
+        reactivateUser('admin-2', 'Motivo', 'admin-1')
+      ).rejects.toMatchObject({
+        code: 'ADMIN_PROTECTION',
+        status: 403,
+      });
     });
   });
 });
