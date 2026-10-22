@@ -1,6 +1,129 @@
+<div align="center">
+
 # SAC Análises
 
-Sistema interno para cadastrar, distribuir, investigar e analisar ocorrências relacionadas a pedidos.
+### Gestão de ocorrências, rastreabilidade e inteligência operacional
+
+**Plataforma interna para registrar, investigar e acompanhar ocorrências relacionadas a pedidos, com controle de acesso, histórico auditável e indicadores operacionais.**
+
+<br/>
+
+![React](https://img.shields.io/badge/React-19-149eca?style=flat-square&logo=react&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6?style=flat-square&logo=typescript&logoColor=white)
+![Express](https://img.shields.io/badge/Express-5-222222?style=flat-square&logo=express&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-4169e1?style=flat-square&logo=postgresql&logoColor=white)
+![Prisma](https://img.shields.io/badge/Prisma-6-2d3748?style=flat-square&logo=prisma&logoColor=white)
+
+<br/>
+
+**[Visão geral](#visão-geral)** · **[Recursos](#recursos-principais)** · **[Arquitetura](#arquitetura)** · **[Instalação](#instalação)** · **[Segurança](#sessões-e-publicação-segura)** · **[Testes](#validação-e-verificação-de-release)**
+
+</div>
+
+---
+
+> [!IMPORTANT]
+> **Projeto de uso interno e repositório privado.** Este README apresenta a arquitetura e o desenvolvimento do sistema. Não é uma instância pública do SAC. Informações reais de clientes, anexos, credenciais e dados sensíveis não devem ser incluídos no repositório.
+
+## Visão geral
+
+O **SAC Análises** centraliza a gestão de ocorrências logísticas e administrativas: da abertura do registro à investigação, tratativa e conclusão. A aplicação mantém o histórico das ações e oferece recursos para acompanhamento operacional, sem substituir a conferência humana das evidências.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <strong>Registro e investigação</strong><br/>
+      Cadastro de casos, clientes, referências externas, itens, comentários e anexos.
+    </td>
+    <td width="50%" valign="top">
+      <strong>Fluxo operacional</strong><br/>
+      Atribuição de responsáveis, prioridades, prazos, mudanças de status e histórico.
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
+      <strong>Governança e segurança</strong><br/>
+      Perfis e setores, sessões protegidas, trilha de auditoria e controles de privacidade.
+    </td>
+    <td valign="top">
+      <strong>Indicadores e documentos</strong><br/>
+      Visão geral, filtros, indicadores e importação assistida de documentos para revisão.
+    </td>
+  </tr>
+</table>
+
+## Recursos principais
+
+- **Gestão de casos:** criação, acompanhamento, atualização, reabertura e exclusão lógica auditada.
+- **Busca e organização:** filtros combináveis, paginação, referências externas e ordenação por atenção operacional.
+- **Equipe e setores:** distribuição de atendimentos com restrições de acesso e transferências controladas.
+- **Prazos e notificações:** acompanhamento de vencimentos, registros que precisam de atenção e eventos relevantes.
+- **Importação de documentos:** extração de dados de formatos suportados, sugestões para conferência e validação antes do registro.
+- **Auditoria e privacidade:** rastreabilidade de operações sensíveis, proteção de anexos e acesso controlado a dados.
+- **Qualidade de engenharia:** testes automatizados, checagem de tipos, migrações versionadas e verificação pré-release.
+
+## Visão da solução
+
+```mermaid
+flowchart LR
+    U["Operador / Analista"] --> W["Interface Web<br/>React + Vite"]
+    W -->|"HTTP / JSON"| A["API<br/>Express + TypeScript"]
+    A --> S["Serviços de negócio<br/>Zod + regras de acesso"]
+    S --> P["Prisma ORM"]
+    P --> D[("PostgreSQL")]
+    S --> F["Armazenamento<br/>local ou S3"]
+
+    classDef client fill:#e7f5ff,stroke:#228be6,color:#183153
+    classDef service fill:#e6fcf5,stroke:#0ca678,color:#143d31
+    classDef data fill:#f3f0ff,stroke:#7950f2,color:#342560
+    class U,W client
+    class A,S,P service
+    class D,F data
+```
+
+O frontend não acessa o banco diretamente. A API concentra autenticação, autorização, regras de negócio, validação e persistência.
+
+## Estrutura do repositório
+
+```text
+sac-analises/
+├── apps/
+│   ├── web/             # React, TypeScript e Vite
+│   └── api/             # Express, serviços, testes e Prisma
+│       └── prisma/      # Schema e migrações
+├── .agents/             # Regras e skills do workspace de desenvolvimento
+├── docs/                # Diretrizes e documentação complementar
+├── scripts/             # Utilitários e verificações do projeto
+└── README.md
+```
+
+## Início rápido
+
+**Pré-requisitos:** Node.js 22+, pnpm 10+ e PostgreSQL 18. No ambiente de desenvolvimento documentado, o PostgreSQL é executado localmente no Windows, sem Docker.
+
+```powershell
+pnpm install
+Copy-Item .env.example .env
+# Configure DATABASE_URL e as demais variáveis necessárias no .env
+pnpm db:generate
+pnpm --filter @sac/api exec prisma migrate status --schema prisma/schema.prisma
+pnpm dev
+```
+
+| Serviço | Endereço local |
+| --- | --- |
+| Interface Web | `http://localhost:5173` |
+| API | `http://localhost:3333` |
+| Health check | `http://localhost:3333/health` |
+
+> [!CAUTION]
+> Antes de aplicar qualquer migração, confirme o estado do banco e revise as migrações pendentes. Não execute `prisma migrate reset` nem `prisma db push` no banco principal.
+
+---
+
+## Documentação técnica
+
+Abaixo estão as instruções completas de arquitetura, configuração, gestão de usuários, segurança, testes e implantação.
 
 ## Arquitetura
 
