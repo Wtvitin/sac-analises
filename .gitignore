@@ -76,3 +76,6 @@ exports/
 # Artefatos SQLite ou bases locais acidentais
 *.db
 *.db-journal
+
+# Knowledge graph e artefatos de análise (Graphify)
+graphify-out/
