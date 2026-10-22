@@ -98,6 +98,7 @@ model User {
   tokenVersion  Int           @default(0)
   lastLoginAt   DateTime?
   timezone      String        @default("America/Sao_Paulo")
+  department    String?
   deletedAt     DateTime?
   assignedCases SacRecord[]   @relation("Assignee")
   createdCases  SacRecord[]   @relation("Creator")
@@ -158,6 +159,7 @@ model SacRecord {
   responsibleArea  String?
   reopenedReason   String?
   cancellationReason String?
+  department       String?
   customerId       String
   customer         Customer      @relation(fields: [customerId], references: [id])
   reasonId         String
@@ -181,6 +183,7 @@ model SacRecord {
 
   @@index([orderNumber])
   @@index([externalTicket])
+  @@index([department])
   @@index([status])
   @@index([priority])
   @@index([assigneeId])
