@@ -51,4 +51,181 @@ describe('server record listing (isolated, no database writes)', () => {
     expect(result).toMatchObject({ total: 42, counts: { overdue: 3, dueToday: 4, nearDue: 5, stale: 6, unassigned: 7, attention: 8, noDue: 0 } });
     expect(mock.count.mock.calls[1][0].where.dueAt.lt).toEqual(mock.count.mock.calls[2][0].where.dueAt.gte);
   });
+
+  describe('pesquisa por referências e ordenação por atenção', () => {
+    it('inclui SacReference na consulta SQL quando sort=attention é utilizado', async () => {
+      mock.queryRaw.mockResolvedValue([{ id: 'case-nf' }]);
+      mock.findMany.mockResolvedValue([{
+        id: 'case-nf',
+        ticket: 'SAC-2026-001',
+        externalTicket: 'EXT-100',
+        orderNumber: 'PED-500',
+        status: 'PENDING',
+        priority: 'HIGH',
+        dueAt: new Date('2026-09-20T12:00:00Z'),
+        openedAt: new Date('2026-09-01T12:00:00Z'),
+        assigneeId: null,
+        lastOperationalActivityAt: new Date('2026-09-01T12:00:00Z'),
+        references: [{ id: 'ref-1', type: 'INVOICE', value: 'NF-998877' }],
+      }]);
+      mock.count.mockResolvedValue(1);
+
+      const result = await listSacRecords(
+        listSacRecordsSchema.parse({ query: 'NF-998877', sort: 'attention', page: 1, pageSize: 10 }),
+        new Date('2026-09-14T15:00:00Z')
+      );
+
+      // Valida que queryRaw foi chamado
+      expect(mock.queryRaw).toHaveBeenCalledOnce();
+      const rawQuery = mock.queryRaw.mock.calls[0][0];
+
+      // Valida que a consulta SQL gerada contém a cláusula EXISTS para SacReference
+      const sqlText = rawQuery.strings.join('?');
+      expect(sqlText).toContain('EXISTS (SELECT 1 FROM "SacReference" ref WHERE ref."recordId" = s."id" AND ref."value" ILIKE ?)');
+      expect(rawQuery.values).toContain('%NF-998877%');
+
+      // Valida que o registro encontrado foi retornado e o total coincide
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0].id).toBe('case-nf');
+      expect(result.total).toBe(1);
+    });
+
+    it('encontra registro por número do atendimento externo e pedido em ambas as ordenações', async () => {
+      mock.queryRaw.mockResolvedValue([{ id: 'case-ext' }]);
+      mock.findMany.mockResolvedValue([{
+        id: 'case-ext',
+        ticket: 'SAC-2026-002',
+        externalTicket: 'ATEND-005233',
+        orderNumber: 'PED-8877',
+        status: 'IN_PROGRESS',
+        priority: 'MEDIUM',
+        dueAt: new Date('2026-09-25T12:00:00Z'),
+        openedAt: new Date('2026-09-01T12:00:00Z'),
+        assigneeId: null,
+        lastOperationalActivityAt: new Date('2026-09-01T12:00:00Z'),
+        references: [],
+      }]);
+      mock.count.mockResolvedValue(1);
+
+      // 1. Busca por atendimento externo com sort=attention
+      const resAttention = await listSacRecords(
+        listSacRecordsSchema.parse({ query: '005233', sort: 'attention' }),
+        new Date('2026-09-14T15:00:00Z')
+      );
+      expect(resAttention.items).toHaveLength(1);
+      expect(resAttention.items[0].externalTicket).toBe('ATEND-005233');
+
+      // 2. Busca por pedido com ordenação padrão
+      mock.findMany.mockResolvedValueOnce([{
+        id: 'case-ext',
+        ticket: 'SAC-2026-002',
+        externalTicket: 'ATEND-005233',
+        orderNumber: 'PED-8877',
+        status: 'IN_PROGRESS',
+        priority: 'MEDIUM',
+        dueAt: new Date('2026-09-25T12:00:00Z'),
+        openedAt: new Date('2026-09-01T12:00:00Z'),
+        assigneeId: null,
+        lastOperationalActivityAt: new Date('2026-09-01T12:00:00Z'),
+        references: [],
+      }]);
+      const resDefault = await listSacRecords(
+        listSacRecordsSchema.parse({ query: '8877', sort: 'openedAt' }),
+        new Date('2026-09-14T15:00:00Z')
+      );
+      expect(resDefault.items).toHaveLength(1);
+      expect(resDefault.items[0].orderNumber).toBe('PED-8877');
+    });
+
+    it('não duplica registros quando o caso possui múltiplas referências', async () => {
+      // Caso possui 3 referências distintas (NF, Pedido, Protocolo)
+      mock.queryRaw.mockResolvedValue([{ id: 'case-multi' }]);
+      mock.findMany.mockResolvedValue([{
+        id: 'case-multi',
+        ticket: 'SAC-2026-003',
+        status: 'PENDING',
+        priority: 'HIGH',
+        dueAt: new Date('2026-09-18T12:00:00Z'),
+        openedAt: new Date('2026-09-01T12:00:00Z'),
+        assigneeId: null,
+        lastOperationalActivityAt: new Date('2026-09-01T12:00:00Z'),
+        references: [
+          { id: 'ref-1', type: 'INVOICE', value: 'NF-1001' },
+          { id: 'ref-2', type: 'ORDER', value: 'PED-2002' },
+          { id: 'ref-3', type: 'EXTERNAL_TICKET', value: 'EXT-3003' },
+        ],
+      }]);
+      mock.count.mockResolvedValue(1);
+
+      const result = await listSacRecords(
+        listSacRecordsSchema.parse({ query: 'NF', sort: 'attention', page: 1, pageSize: 20 }),
+        new Date('2026-09-14T15:00:00Z')
+      );
+
+      // Retorna exatamente 1 item único, sem duplicidade
+      expect(result.items).toHaveLength(1);
+      expect(result.total).toBe(1);
+      expect(result.items[0].references).toHaveLength(3);
+    });
+
+    it('retorna lista vazia e total zero para referências inexistentes sob sort=attention', async () => {
+      mock.queryRaw.mockResolvedValue([]);
+      mock.findMany.mockResolvedValue([]);
+      mock.count.mockResolvedValue(0);
+
+      const result = await listSacRecords(
+        listSacRecordsSchema.parse({ query: 'REFERENCIA_INEXISTENTE_XYZ', sort: 'attention' }),
+        new Date('2026-09-14T15:00:00Z')
+      );
+
+      expect(result.items).toHaveLength(0);
+      expect(result.total).toBe(0);
+    });
+
+    it('combina busca por referência com filtro de setor, permissões e paginação', async () => {
+      mock.queryRaw.mockResolvedValue([{ id: 'case-qualidade' }]);
+      mock.findMany.mockResolvedValue([{
+        id: 'case-qualidade',
+        ticket: 'SAC-2026-004',
+        department: 'Qualidade',
+        status: 'PENDING',
+        priority: 'HIGH',
+        dueAt: new Date('2026-09-18T12:00:00Z'),
+        openedAt: new Date('2026-09-01T12:00:00Z'),
+        assigneeId: null,
+        lastOperationalActivityAt: new Date('2026-09-01T12:00:00Z'),
+        references: [{ id: 'ref-4', type: 'INVOICE', value: 'NF-QUALIDADE' }],
+      }]);
+      mock.count.mockResolvedValue(1);
+
+      // Usuário com perfil ANALYST vinculado ao setor 'Qualidade'
+      const result = await listSacRecords(
+        listSacRecordsSchema.parse({ query: 'QUALIDADE', sort: 'attention', priority: 'HIGH', status: 'PENDING', page: 2, pageSize: 10 }),
+        'ANALYST',
+        'Qualidade',
+        new Date('2026-09-14T15:00:00Z')
+      );
+
+      const rawQuery = mock.queryRaw.mock.calls[0][0];
+      const sqlText = rawQuery.strings.join('?');
+
+      // Verifica cláusula de setor segregada
+      expect(sqlText).toContain('s."department" = ?');
+      expect(rawQuery.values).toContain('Qualidade');
+
+      // Verifica cláusula de status e prioridade
+      expect(sqlText).toContain('s."status"::text = ?');
+      expect(rawQuery.values).toContain('PENDING');
+      expect(sqlText).toContain('s."priority"::text = ?');
+      expect(rawQuery.values).toContain('HIGH');
+
+      // Verifica OFFSET de paginação (página 2, pageSize 10 -> offset 10)
+      expect(sqlText).toContain('LIMIT ? OFFSET ?');
+      expect(rawQuery.values).toContain(10); // pageSize e offset
+
+      expect(result.items).toHaveLength(1);
+      expect(result.page).toBe(2);
+      expect(result.pageSize).toBe(10);
+    });
+  });
 });
