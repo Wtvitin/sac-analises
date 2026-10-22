@@ -132,3 +132,9 @@ export const idempotencyKeySchema = z.string().uuid('Chave de idempotência inv�
 export const externalTicketCheckSchema = z.object({ value: z.string().trim().min(1).max(80), excludeId: z.string().trim().optional() });
 export const customerSearchSchema = z.object({ query: z.string().trim().max(120).default('') });
 
+export const deleteSacRecordSchema = z.object({
+  updatedAt: z.coerce.date(),
+  justification: z.string().trim().min(5, 'Informe uma justificativa com no mínimo 5 caracteres.').max(1000, 'A justificativa deve conter no máximo 1000 caracteres.'),
+});
+
+export type DeleteSacRecordInput = z.infer<typeof deleteSacRecordSchema>;

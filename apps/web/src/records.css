@@ -128,10 +128,34 @@
 .row-actions-trigger { width: 34px; height: 34px; display: inline-grid; place-items: center; padding: 0; border: 0; border-radius: var(--radius-sm); color: var(--color-text-secondary); background: transparent; }
 .row-actions-trigger:hover, .row-actions-trigger[aria-expanded='true'] { color: var(--color-primary); background: var(--color-primary-soft); }
 .row-actions-trigger svg { width: 19px; height: 19px; }
-.row-actions-menu { position: fixed; width: 168px; padding: var(--space-1); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); box-shadow: var(--shadow-md); z-index: var(--z-dropdown); }
-.row-actions-menu button { width: 100%; min-height: 38px; display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-2); border: 0; border-radius: var(--radius-sm); color: var(--color-primary); background: transparent; font-size: var(--font-size-secondary); text-align: left; }
+.row-actions-menu { position: fixed; width: 176px; padding: var(--space-1); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); box-shadow: var(--shadow-md); z-index: var(--z-dropdown); display: flex; flex-direction: column; }
+.row-actions-menu button { width: 100%; min-height: 38px; display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-2); border: 0; border-radius: var(--radius-sm); color: var(--color-primary); background: transparent; font-size: var(--font-size-secondary); text-align: left; cursor: pointer; }
 .row-actions-menu button:hover, .row-actions-menu button:focus-visible { background: var(--color-primary-soft); }
 .row-actions-menu svg { width: 17px; height: 17px; }
+.row-actions-divider { height: 1px; margin: 4px 0; background: var(--color-border); border: 0; }
+.row-actions-menu button.row-action-delete { color: #dc2626 !important; }
+.row-actions-menu button.row-action-delete svg { color: #dc2626 !important; stroke: #dc2626 !important; }
+.row-actions-menu button.row-action-delete:hover, .row-actions-menu button.row-action-delete:focus-visible { background: #fef2f2 !important; color: #b91c1c !important; }
+
+/* Modal de exclusão de registros SAC */
+.delete-sac-modal { width: 100%; max-width: 520px; }
+.delete-sac-modal .modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.delete-sac-warning { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; background: #fffbeb; border: 1px solid #fef3c7; border-radius: var(--radius-md); color: #92400e; margin-bottom: 16px; font-size: 13px; line-height: 1.45; }
+.delete-sac-warning svg { width: 20px; height: 20px; flex-shrink: 0; color: #d97706; margin-top: 1px; }
+.delete-sac-warning strong { display: block; color: #78350f; font-weight: 600; margin-bottom: 4px; }
+.delete-sac-warning p { margin: 0; }
+.delete-sac-form { display: flex; flex-direction: column; gap: 14px; }
+.delete-sac-form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 500; color: var(--color-text-primary); text-align: left; }
+.delete-sac-form textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); font-size: 13px; font-family: inherit; resize: vertical; min-height: 80px; box-sizing: border-box; }
+.delete-sac-form textarea:focus { outline: 2px solid var(--color-primary-soft); border-color: var(--color-primary); }
+.delete-sac-form small { color: var(--color-text-secondary); font-size: 11px; margin-top: -2px; }
+.delete-sac-confirm { display: flex !important; flex-direction: row !important; align-items: flex-start !important; gap: 10px !important; padding: 10px 12px; background: var(--color-surface-muted, #f8fafc); border: 1px solid var(--color-border); border-radius: var(--radius-sm); cursor: pointer; font-size: 13px !important; line-height: 1.4; color: var(--color-text-primary); }
+.delete-sac-confirm input[type='checkbox'] { width: 16px; height: 16px; margin-top: 2px; flex-shrink: 0; cursor: pointer; }
+.delete-sac-danger-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 16px; min-height: 38px; border: 0; border-radius: var(--radius-sm); background: #dc2626; color: #ffffff; font-weight: 600; font-size: 13px; cursor: pointer; transition: background-color .15s ease; }
+.delete-sac-danger-btn:hover:not(:disabled) { background: #b91c1c; }
+.delete-sac-danger-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.delete-sac-danger-btn svg { width: 16px; height: 16px; }
+
 .mobile-record-list { display: none; }
 
 .empty-state.empty-state-compact { min-height: 210px; align-content: center; padding: var(--space-6); }

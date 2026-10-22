@@ -9,7 +9,7 @@ import { createCaseNotification } from '../notifications/notification.service.js
 import { confirmDocumentImport } from '../document-imports/document-import.service.js';
 import { logSensitiveDataRevealAudit, maskCpfCnpj, type SensitiveCategory } from '../../lib/privacy/privacy.service.js';
 import { listSacRecordsSchema } from './sac.schema.js';
-import type { assignmentSchema, changeStatusSchema, commentSchema, createSacRecordSchema, dueDateChangeSchema, historyQuerySchema, priorityChangeSchema, takeCaseSchema, transferDepartmentSchema, updateSacRecordSchema, updateTreatmentSchema } from './sac.schema.js';
+import type { assignmentSchema, changeStatusSchema, commentSchema, createSacRecordSchema, deleteSacRecordSchema, dueDateChangeSchema, historyQuerySchema, priorityChangeSchema, takeCaseSchema, transferDepartmentSchema, updateSacRecordSchema, updateTreatmentSchema } from './sac.schema.js';
 
 type ListInput = z.input<typeof listSacRecordsSchema>;
 type ListParsedInput = z.infer<typeof listSacRecordsSchema>;
@@ -929,5 +929,92 @@ export async function revealSacRecordSensitive(recordId: string, field: string |
   });
 
   return { revealedValue, category, fieldPath };
+}
+
+export async function deleteSacRecord(
+  recordId: string,
+  input: DeleteSacRecordInput,
+  actorId: string,
+  actorRole: string = 'ADMIN',
+  actorDepartment?: string | null,
+) {
+  if (actorRole !== 'ADMIN') {
+    throw new SacRecordError('FORBIDDEN', 'Você não tem permissão para esta ação.', 403);
+  }
+
+  return prisma.$transaction(async tx => {
+    const current = await currentForOperation(tx, recordId, input.updatedAt, actorRole, actorDepartment);
+    const actor = await tx.user.findUniqueOrThrow({ where: { id: actorId }, select: { id: true, name: true, role: true } });
+    if (actor.role !== 'ADMIN') {
+      throw new SacRecordError('FORBIDDEN', 'Você não tem permissão para esta ação.', 403);
+    }
+
+    const activityAt = new Date();
+    const changed = await tx.sacRecord.updateMany({
+      where: {
+        id: recordId,
+        updatedAt: input.updatedAt,
+        archivedAt: null,
+      },
+      data: {
+        archivedAt: activityAt,
+        deletedAt: activityAt,
+        deletedById: actorId,
+        deletionReason: input.justification,
+        lastOperationalActivityAt: activityAt,
+      },
+    });
+
+    if (changed.count !== 1) {
+      throw new SacRecordError('STALE_SAC_RECORD', 'Este caso foi atualizado por outro usuário. Recarregue as informações antes de continuar.', 409);
+    }
+
+    await tx.activityLog.create({
+      data: {
+        recordId,
+        actorId,
+        eventType: 'SAC_DELETED',
+        summary: `Registro SAC excluído por ${actor.name}. Justificativa: ${input.justification}`,
+        before: {
+          status: current.status,
+          priority: current.priority,
+          assigneeId: current.assigneeId,
+          department: current.department,
+          updatedAt: current.updatedAt,
+        },
+        after: {
+          archivedAt: activityAt,
+          deletedAt: activityAt,
+          deletedById: actorId,
+          justification: input.justification,
+        },
+        createdAt: activityAt,
+      },
+    });
+
+    await tx.adminAudit.create({
+      data: {
+        type: 'CASE_DELETED',
+        actorId,
+        justification: input.justification,
+        metadata: {
+          recordId,
+          ticket: current.ticket,
+          department: current.department,
+          status: current.status,
+          priority: current.priority,
+          deletedAt: activityAt.toISOString(),
+        },
+      },
+    });
+
+    return {
+      id: recordId,
+      ticket: current.ticket,
+      deleted: true,
+      deletedAt: activityAt.toISOString(),
+      message: `Registro ${current.ticket} excluído com sucesso.`,
+    };
+  });
 }
 

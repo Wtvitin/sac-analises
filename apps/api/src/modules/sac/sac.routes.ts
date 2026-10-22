@@ -4,11 +4,11 @@ import {
   ALLOWED_ATTACHMENT_TYPES, AttachmentStorageError, MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_SIZE, getAttachmentStorage,
 } from '../../lib/attachment-storage.js';
 import {
-  assignmentSchema, changeStatusSchema, commentSchema, createSacRecordSchema, customerSearchSchema, dueDateChangeSchema, externalTicketCheckSchema, historyQuerySchema, idempotencyKeySchema,
+  assignmentSchema, changeStatusSchema, commentSchema, createSacRecordSchema, customerSearchSchema, deleteSacRecordSchema, dueDateChangeSchema, externalTicketCheckSchema, historyQuerySchema, idempotencyKeySchema,
   listSacRecordsSchema, priorityChangeSchema, takeCaseSchema, transferDepartmentSchema, updateSacRecordSchema, updateTreatmentSchema,
 } from './sac.schema.js';
 import {
-  SacRecordError, addSacComment, assignSacRecord, changeSacDueDate, changeSacPriority, changeSacStatus, checkExternalTicket, createSacRecord, getSacHistory, getSacRecord, listSacRecords, revealSacRecordSensitive, searchCustomers, takeSacRecord, transferSacRecordDepartment, updateSacRecord, updateSacTreatment,
+  SacRecordError, addSacComment, assignSacRecord, changeSacDueDate, changeSacPriority, changeSacStatus, checkExternalTicket, createSacRecord, deleteSacRecord, getSacHistory, getSacRecord, listSacRecords, revealSacRecordSensitive, searchCustomers, takeSacRecord, transferSacRecordDepartment, updateSacRecord, updateSacTreatment,
 } from './sac.service.js';
 import { requirePermission, requireRole } from '../auth/auth.middleware.js';
 
@@ -128,3 +128,31 @@ sacRouter.patch('/:id/department', requireRole('ADMIN'), async (req, res, next) 
   }
 });
 
+sacRouter.delete('/:id', requireRole('ADMIN'), async (req, res, next) => {
+  try {
+    const input = deleteSacRecordSchema.parse(req.body);
+    const result = await deleteSacRecord(String(req.params.id), input, req.auth!.userId, req.auth!.role, req.auth!.department ?? null);
+    res.json({ data: result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+sacRouter.post('/:id/delete', requireRole('ADMIN'), async (req, res, next) => {
+  try {
+    const input = deleteSacRecordSchema.parse(req.body);
+    const result = await deleteSacRecord(String(req.params.id), input, req.auth!.userId, req.auth!.role, req.auth!.department ?? null);
+    res.json({ data: result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+sacRouter.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
+  if (error instanceof SacRecordError || error instanceof AttachmentStorageError) return res.status(error.status).json({ error: { code: error.code, message: error.message } });
+  if (error instanceof multer.MulterError) {
+    const message = error.code === 'LIMIT_FILE_SIZE' ? 'Cada arquivo deve possuir até 10 MB.' : `Envie no máximo ${MAX_ATTACHMENT_COUNT} arquivos.`;
+    return res.status(422).json({ error: { code: error.code, message } });
+  }
+  return next(error);
+});
