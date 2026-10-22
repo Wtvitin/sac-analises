@@ -20,7 +20,12 @@ const security = getSecurityConfig();
 app.disable('x-powered-by');
 app.set('trust proxy', security.trustProxy);
 app.use(helmet());
-app.use(cors({ origin(origin, callback) { if (!origin || origin === security.webOrigin) return callback(null, true); return callback(new Error('Origin not allowed')); }, credentials: true }));
+const allowedOrigins = new Set(
+  security.production
+    ? [security.webOrigin]
+    : [security.webOrigin, 'http://localhost:5173', 'http://127.0.0.1:5173']
+);
+app.use(cors({ origin(origin, callback) { if (!origin || allowedOrigins.has(origin)) return callback(null, true); return callback(new Error('Origin not allowed')); }, credentials: true }));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false, limit: '64kb' }));
 app.use((req, res, next) => {

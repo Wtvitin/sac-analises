@@ -12,15 +12,37 @@ import '../src/records.css';
 if (import.meta.env.MODE !== 'listing-test') throw new Error('Esta página é exclusiva do ambiente de teste.');
 const count = Number(new URLSearchParams(location.search).get('count') ?? 45);
 const records = Array.from({ length: count }, (_, i) => ({
-  ticket: `TEST-${String(i + 1).padStart(4, '0')}`, orderNumber: String(1000 + i), description: 'Registro exclusivo de teste visual, sem persistência.',
-  priority: ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'][i % 4], status: ['PENDING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'][i % 4],
-  customer: { name: `Cliente de teste ${i + 1}` }, reason: { name: i % 2 ? 'Extravio' : 'Avaria' }, assignee: i % 3 ? { name: 'Responsável de teste' } : null,
-  openedAt: '2026-09-01T12:00:00Z', dueAt: '2026-09-15T12:00:00Z', updatedAt: '2026-09-12T12:00:00Z',
+  id: `test-id-${i + 1}`,
+  ticket: `TEST-${String(i + 1).padStart(4, '0')}`,
+  department: i % 2 ? 'SAC' : 'Qualidade',
+  orderNumber: String(1000 + i),
+  description: 'Registro exclusivo de teste visual, sem persistência.',
+  priority: ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'][i % 4],
+  status: ['PENDING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'][i % 4],
+  customer: { name: `Cliente de teste ${i + 1}` },
+  reason: { name: i % 2 ? 'Extravio' : 'Avaria' },
+  assignee: i % 3 ? { name: 'Responsável de teste' } : null,
+  openedAt: '2026-09-01T12:00:00Z',
+  dueAt: '2026-09-15T12:00:00Z',
+  updatedAt: '2026-09-12T12:00:00Z',
 }));
 let requests = 0;
 window.fetch = async (input, options) => {
+  const url = new URL(String(input), window.location.origin);
+  if (url.pathname === '/notifications/unread-count') {
+    return new Response(JSON.stringify({ data: { count: 0 } }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  if (url.pathname.startsWith('/sac-records/') && options?.method === 'DELETE') {
+    requests++;
+    const counter = document.getElementById('test-requests');
+    if (counter) counter.textContent = `Requisições de teste: ${requests} (DELETE simulado)`;
+    return new Response(JSON.stringify({ data: { success: true } }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   if (options?.method && options.method !== 'GET') throw new Error('Escritas bloqueadas no teste.');
-  const url = new URL(String(input));
   if (url.pathname !== '/sac-records') throw new Error('Rota não disponível no teste.');
   const q = url.searchParams; requests++;
   const counter = document.getElementById('test-requests'); if (counter) counter.textContent = `Requisições de teste: ${requests}`;

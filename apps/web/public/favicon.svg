@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <style>
+    .sc-line { stroke: #0f172a; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; fill: none; }
+    .sc-bold { stroke: #0f172a; stroke-width: 2.8; stroke-linecap: round; stroke-linejoin: round; fill: none; }
+    .sc-solid { fill: #0f172a; stroke: #0f172a; stroke-width: 1; }
+    .sc-fill { fill: #0f172a; }
+    .sc-earcup { fill: #ffffff; stroke: #0f172a; stroke-width: 2.4; }
+
+    @media (prefers-color-scheme: dark) {
+      .sc-line { stroke: #f8fafc; }
+      .sc-bold { stroke: #f8fafc; }
+      .sc-solid { fill: #f8fafc; stroke: #f8fafc; }
+      .sc-fill { fill: #f8fafc; }
+      .sc-earcup { fill: #0f172a; stroke: #f8fafc; }
+    }
+  </style>
+
+  <!-- Headband -->
+  <path d="M 20 21 C 20 10, 44 10, 44 21" class="sc-bold" />
+
+  <!-- Ear cups -->
+  <rect x="17" y="18" width="5.5" height="13" rx="2.75" class="sc-earcup" />
+  <rect x="41.5" y="18" width="5.5" height="13" rx="2.75" class="sc-earcup" />
+
+  <!-- Head / Hair -->
+  <path d="M 22.5 19 C 24 11, 40 11, 41.5 19" class="sc-line" />
+  <path d="M 22.5 20 C 26 25, 30 20, 41.5 22.5" class="sc-line" />
+
+  <!-- Jawline / Face -->
+  <path d="M 23 28 C 23 38, 41 38, 41 28" class="sc-line" />
+
+  <!-- Microphone -->
+  <path d="M 19 31 L 19 36 C 19 38.5, 21.5 39, 25 39" class="sc-bold" />
+  <rect x="25" y="37" width="7" height="4.2" rx="2.1" class="sc-solid" />
+
+  <!-- Shoulders & Base -->
+  <path d="M 8 59 C 10 51, 20 45, 27.5 42" class="sc-bold" />
+  <path d="M 36.5 42 C 44 45, 54 51, 56 59" class="sc-bold" />
+  <line x1="8" y1="59" x2="56" y2="59" class="sc-bold" />
+
+  <!-- Collar / Shirt / Tie -->
+  <path d="M 27.5 42 L 32 48.5 L 36.5 42" class="sc-line" />
+  <path d="M 27.5 42 L 31 45.5" class="sc-line" />
+  <path d="M 36.5 42 L 33 45.5" class="sc-line" />
+  <!-- Tie -->
+  <polygon points="31,48.5 33,48.5 34,51.5 32,58 30,51.5" class="sc-solid" />
+
+  <!-- Accent lines on right shoulder -->
+  <line x1="45" y1="49" x2="48" y2="53" class="sc-line" />
+  <circle cx="42.5" cy="48" r="1.1" class="sc-fill" />
+</svg>

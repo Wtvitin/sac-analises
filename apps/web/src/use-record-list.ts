@@ -14,7 +14,10 @@ export function useRecordList<T>(query: string, filters: RecordFilters, sort: So
   useEffect(() => {
     if (invalid) return;
     const controller = new AbortController();
-    setState(previous => ({ ...previous, key, loading: true, error: false }));
+    setState(previous => {
+      const isRevalidation = previous.key === key && previous.items.length > 0 && !previous.error;
+      return { ...previous, key, loading: isRevalidation ? false : true, error: false };
+    });
     apiRequest<ListResult<T>>(`/sac-records?${key}`, { signal: controller.signal }).then(result => {
       if (!controller.signal.aborted) setState({ ...result, items: result.items.map(map), key, loading: false, error: false });
     }).catch(() => {
@@ -22,5 +25,5 @@ export function useRecordList<T>(query: string, filters: RecordFilters, sort: So
     });
     return () => controller.abort();
   }, [key, invalid, retry, refresh, map]);
-  return { ...state, loading: !invalid && (state.loading || state.key !== key), onRetry: () => setRetry(value => value + 1) };
+  return { ...state, loading: !invalid && (state.loading || (state.key !== key && state.items.length === 0)), onRetry: () => setRetry(value => value + 1) };
 }
