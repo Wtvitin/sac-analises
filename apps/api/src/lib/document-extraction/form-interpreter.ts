@@ -1,3 +1,4 @@
+import { normalizeBatchNumber } from './batch-normalizer.js';
 import type {
   AdditionalFieldInfo,
   CandidateField,
@@ -7,9 +8,10 @@ import type {
   ReferencedDocumentFile,
 } from './document-extraction.types.js';
 import { isOutlookFormsDocument, parseOutlookFormsDocument } from './outlook-forms.parser.js';
+import { isTabularAttendanceDocument, parseTabularAttendanceDocument } from './tabular-attendance.parser.js';
 
 export interface InterpretedForm {
-  modelId?: 'OUTLOOK_MS_FORMS' | 'KEY_VALUE_FORM' | 'GENERIC_TEXT';
+  modelId?: 'OUTLOOK_MS_FORMS' | 'KEY_VALUE_FORM' | 'GENERIC_TEXT' | 'TABULAR_ATTENDANCE';
   modelName?: string;
   externalTicket: CandidateField;
   customerName: CandidateField;
@@ -122,6 +124,11 @@ export function interpretDocumentText(raw: RawDocumentText | string): Interprete
     return parseOutlookFormsDocument(normalizedRaw);
   }
 
+  // If document matches Tabular Attendance structure ("Dados do Atendimento"), use dedicated parser
+  if (isTabularAttendanceDocument(normalizedRaw.text)) {
+    return parseTabularAttendanceDocument(normalizedRaw);
+  }
+
   const text = normalizedRaw.text;
   const warnings = [...normalizedRaw.warnings];
   const rawFields: Record<string, string> = {};
@@ -144,12 +151,17 @@ export function interpretDocumentText(raw: RawDocumentText | string): Interprete
   // 2. Cliente
   const clientFound = extractLabelValue(text, [
     /\b(?:cliente|nome\s+do\s+cliente|nome\s+completo|nome|raz[ãa]o\s+social)\s*[:#]\s*([^\r\n;]+)/i,
-    /\b(?:cliente)\s*[:#\s]\s*([^\r\n;]+)/i,
+    /\b(?:cliente)\s*[:#=]\s*([^\r\n;]+)/i,
   ]);
-  const customerName: CandidateField = clientFound
+  let customerNameValue = clientFound ? clientFound.value.replace(/^(sr|sra|dr|dra)\.?\s+/i, '').trim() : '';
+  // High confidence requires real evidence for the field; a narrative sentence containing "cliente" is not enough
+  if (/^(?:nos|que|solicitou|informou|informa|relatou|enviou|encaminhou|entrou|reclamou)\b/i.test(customerNameValue)) {
+    customerNameValue = '';
+  }
+  const customerName: CandidateField = customerNameValue
     ? {
-        value: clientFound.value.replace(/^(sr|sra|dr|dra)\.?\s+/i, ''),
-        sourceSnippet: clientFound.snippet,
+        value: customerNameValue,
+        sourceSnippet: clientFound!.snippet,
         confidence: 'IDENTIFIED',
         confidenceLevel: 'HIGH',
         requiresReview: false,
@@ -308,20 +320,29 @@ export function interpretDocumentText(raw: RawDocumentText | string): Interprete
 
       const code = codeKey ? row[codeKey]?.trim() || `ITEM-${idx + 1}` : `ITEM-${idx + 1}`;
       const desc = descKey ? row[descKey]?.trim() : '';
-      const batch = batchKey ? row[batchKey]?.trim() : '';
+      const rawBatch = batchKey ? row[batchKey]?.trim() : '';
+      const batchNorm = normalizeBatchNumber(rawBatch);
       const rawQty = qtyKey ? parseFloat(row[qtyKey]?.replace(',', '.')) : 1;
       const quantity = isNaN(rawQty) || rawQty <= 0 ? 1 : rawQty;
       const note = noteKey ? row[noteKey]?.trim() : '';
 
-      if (desc || code !== `ITEM-${idx + 1}`) {
+      if (desc || code !== `ITEM-${idx + 1}` || rawBatch) {
         items.push({
           key: `import-item-${idx}`,
           code,
           description: desc || 'Item importado do formulário',
-          batch,
+          batch: batchNorm.status === 'VALID' ? batchNorm.batch : '',
           quantity,
           note,
-          confidence: 'IDENTIFIED',
+          confidence: batchNorm.requiresReview ? 'REVIEW_REQUIRED' : 'IDENTIFIED',
+          confidenceLevel: batchNorm.confidenceLevel || 'HIGH',
+          requiresReview: batchNorm.requiresReview,
+          sourceSnippet: batchNorm.sourceSnippet,
+          warning: batchNorm.warning,
+          rawBatch: rawBatch || undefined,
+          batchStatus: batchNorm.status,
+          batchCandidates: batchNorm.candidates,
+          batchNotice: batchNorm.displayNotice,
         });
       }
     });
@@ -344,6 +365,8 @@ export function interpretDocumentText(raw: RawDocumentText | string): Interprete
           quantity: 1,
           note: 'Identificado no texto',
           confidence: 'REVIEW_REQUIRED',
+          batchStatus: 'EMPTY',
+          batchNotice: 'O lote não foi informado no documento.',
         });
         itemIndex++;
       }

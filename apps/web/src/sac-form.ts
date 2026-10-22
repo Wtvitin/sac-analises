@@ -1,5 +1,18 @@
 export type PriorityValue = '' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
-export type SacItemForm = { key: string; code: string; description: string; batch: string; quantity: string; note: string };
+export type SacItemForm = {
+  key: string;
+  code: string;
+  description: string;
+  batch: string;
+  quantity: string;
+  note: string;
+  batchStatus?: 'VALID' | 'EMPTY' | 'AMBIGUOUS' | 'MULTIPLE';
+  batchSnippet?: string;
+  batchWarning?: string;
+  batchNotice?: string;
+  batchRequiresReview?: boolean;
+  batchCandidates?: string[];
+};
 
 export type SacReferenceType =
   | 'ORDER'
@@ -30,6 +43,7 @@ export type SacReferenceForm = {
 };
 
 export type SacFormValues = {
+  department?: string;
   customerName: string; orderNumber: string; externalTicket: string;
   references: SacReferenceForm[];
   channelId: string;
@@ -55,6 +69,7 @@ export function createEmptyReference(type: SacReferenceType = 'ORDER'): SacRefer
 
 export function createEmptySacForm(): SacFormValues {
   return {
+    department: '',
     customerName: '', orderNumber: '', externalTicket: '', references: [],
     channelId: '', openedAt: toLocalDateTimeInput(), reasonId: '', subreasonId: '',
     priority: '', description: '', internalNote: '', assigneeId: '', dueDate: '',
@@ -66,8 +81,11 @@ export function createEmptyItem(): SacItemForm {
   return { key: crypto.randomUUID(), code: '', description: '', batch: '', quantity: '', note: '' };
 }
 
-export function validateSacForm(form: SacFormValues): SacFormErrors {
+export function validateSacForm(form: SacFormValues, isAdmin = false, isEditing = false): SacFormErrors {
   const errors: SacFormErrors = {};
+  if (isAdmin && !isEditing && (!form.department || !form.department.trim())) {
+    errors.department = 'Selecione o setor do caso.';
+  }
   if (form.customerName.trim().length < 2) errors.customerName = 'Informe o cliente.';
   if (!form.channelId) errors.channelId = 'Selecione um canal.';
   if (!form.openedAt || Number.isNaN(new Date(form.openedAt).getTime())) errors.openedAt = 'Informe uma data de abertura válida.';
@@ -125,8 +143,19 @@ export function sacFormPayload(
     identifiedCause: form.identifiedCause,
     responsibleArea: form.responsibleArea,
     correctiveAction: form.correctiveAction,
-    items: form.items.map(({ key: _key, ...item }) => ({ ...item, quantity: Number(item.quantity) })),
+    items: form.items.map(({ key: _key, batchStatus: _bs, batchSnippet: _sn, batchWarning: _bw, batchNotice: _bn, batchRequiresReview: _br, batchCandidates: _bc, ...item }) => {
+      let cleanBatch = item.batch ? item.batch.trim() : '';
+      if (/^o\s+lote\s+n[ãa]o\s+foi\s+informado/i.test(cleanBatch)) {
+        cleanBatch = '';
+      }
+      return {
+        ...item,
+        batch: cleanBatch || null,
+        quantity: Number(item.quantity),
+      };
+    }),
     allowDuplicateExternalTicket,
+    ...(!updatedAt && form.department && form.department.trim() ? { department: form.department.trim() } : {}),
     ...(updatedAt ? { updatedAt } : {}),
     ...(importSessionId ? { importSessionId, preserveImportAsAttachment: preserveImportAsAttachment ?? true } : {}),
   };

@@ -47,6 +47,9 @@ export async function parseImageDocument(buffer: Buffer): Promise<RawDocumentTex
     const ocrPromise = (async () => {
       const worker = await createWorker('por', 1, workerOptions);
       try {
+        await worker.setParameters({
+          tessedit_pageseg_mode: '3' as any,
+        });
         const ret = await worker.recognize(buffer);
         return ret?.data?.text || '';
       } finally {

@@ -151,7 +151,7 @@ export async function getDocumentImport(
 
 export async function revealDocumentImportField(
   importId: string,
-  fieldIdentifier: { index?: number; fieldName?: string },
+  fieldIdentifier: { index?: number; fieldName?: string; fileIndex?: number },
   userId: string,
   userRole: string
 ): Promise<{ value: string; category: string }> {
@@ -175,7 +175,16 @@ export async function revealDocumentImportField(
   let rawValue = '';
   let category: SensitiveCategory = 'SENSITIVE';
 
-  if (typeof fieldIdentifier.index === 'number' && Array.isArray(rawExtracted.additionalInfo)) {
+  const isReferencedFiles = fieldIdentifier.fieldName === 'referencedFiles' || typeof fieldIdentifier.fileIndex === 'number';
+  const targetRefIndex = typeof fieldIdentifier.fileIndex === 'number' ? fieldIdentifier.fileIndex : fieldIdentifier.index;
+
+  if (isReferencedFiles && Array.isArray(rawExtracted.referencedFiles) && typeof targetRefIndex === 'number') {
+    const item = rawExtracted.referencedFiles[targetRefIndex];
+    if (item) {
+      rawValue = String(item.name || '');
+      category = 'CLINICAL';
+    }
+  } else if (typeof fieldIdentifier.index === 'number' && Array.isArray(rawExtracted.additionalInfo)) {
     const item = rawExtracted.additionalInfo[fieldIdentifier.index];
     if (item) {
       rawValue = String(item.value || '');
@@ -193,9 +202,11 @@ export async function revealDocumentImportField(
     throw new DocumentImportError('FIELD_NOT_FOUND', 'Campo sensível não encontrado na sessão.', 404);
   }
 
-  const fieldPath = typeof fieldIdentifier.index === 'number'
-    ? `additionalInfo.${fieldIdentifier.index}`
-    : fieldIdentifier.fieldName;
+  const fieldPath = isReferencedFiles && typeof targetRefIndex === 'number'
+    ? `referencedFiles.${targetRefIndex}`
+    : typeof fieldIdentifier.index === 'number'
+      ? `additionalInfo.${fieldIdentifier.index}`
+      : fieldIdentifier.fieldName;
 
   await logSensitiveDataRevealAudit({
     actorId: userId,

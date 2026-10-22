@@ -20,6 +20,13 @@ export interface ExtractedItem {
   note: string;
   confidence: ExtractionConfidence;
   confidenceLevel?: ExtractionConfidenceLevel;
+  requiresReview?: boolean;
+  sourceSnippet?: string;
+  warning?: string;
+  rawBatch?: string;
+  batchStatus?: 'VALID' | 'EMPTY' | 'AMBIGUOUS' | 'MULTIPLE';
+  batchCandidates?: string[];
+  batchNotice?: string;
 }
 
 export interface AdditionalFieldInfo {
@@ -57,7 +64,7 @@ export interface ExtractedReference {
 export interface FormExtractionResult {
   format: 'PDF' | 'IMAGE' | 'XLSX';
   isScannedPdf?: boolean;
-  modelId?: 'OUTLOOK_MS_FORMS' | 'KEY_VALUE_FORM' | 'GENERIC_TEXT';
+  modelId?: 'OUTLOOK_MS_FORMS' | 'KEY_VALUE_FORM' | 'GENERIC_TEXT' | 'TABULAR_ATTENDANCE';
   modelName?: string;
   externalTicket: CandidateField;
   customerName: CandidateField;
