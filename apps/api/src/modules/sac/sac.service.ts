@@ -8,9 +8,11 @@ import { normalizeCatalogName } from '../catalog/catalog.schema.js';
 import { createCaseNotification } from '../notifications/notification.service.js';
 import { confirmDocumentImport } from '../document-imports/document-import.service.js';
 import { logSensitiveDataRevealAudit, maskCpfCnpj, type SensitiveCategory } from '../../lib/privacy/privacy.service.js';
-import type { assignmentSchema, changeStatusSchema, commentSchema, createSacRecordSchema, dueDateChangeSchema, historyQuerySchema, listSacRecordsSchema, priorityChangeSchema, takeCaseSchema, updateSacRecordSchema } from './sac.schema.js';
+import { listSacRecordsSchema } from './sac.schema.js';
+import type { assignmentSchema, changeStatusSchema, commentSchema, createSacRecordSchema, dueDateChangeSchema, historyQuerySchema, priorityChangeSchema, takeCaseSchema, transferDepartmentSchema, updateSacRecordSchema, updateTreatmentSchema } from './sac.schema.js';
 
-type ListInput = z.infer<typeof listSacRecordsSchema>;
+type ListInput = z.input<typeof listSacRecordsSchema>;
+type ListParsedInput = z.infer<typeof listSacRecordsSchema>;
 type CreateInput = z.infer<typeof createSacRecordSchema>;
 type UpdateInput = z.infer<typeof updateSacRecordSchema>;
 type ChangeStatusInput = z.infer<typeof changeStatusSchema>;
@@ -20,6 +22,8 @@ type PriorityInput = z.infer<typeof priorityChangeSchema>;
 type DueDateInput = z.infer<typeof dueDateChangeSchema>;
 type CommentInput = z.infer<typeof commentSchema>;
 type HistoryInput = z.infer<typeof historyQuerySchema>;
+type TransferDepartmentInput = z.infer<typeof transferDepartmentSchema>;
+type DeleteSacRecordInput = z.infer<typeof deleteSacRecordSchema>;
 type ExistingReferences = { reasonId: string; subreasonId: string | null; channelId: string | null; assigneeId: string | null };
 
 export class SacRecordError extends Error {
@@ -31,7 +35,7 @@ const recordInclude = {
   reason: true,
   subreason: true,
   channelCatalog: true,
-  assignee: { select: { id: true, name: true, active: true } },
+  assignee: { select: { id: true, name: true, active: true, role: true, department: true } },
   references: { orderBy: { createdAt: 'asc' as const } },
   items: { orderBy: { createdAt: 'asc' as const } },
   attachments: {
@@ -63,23 +67,35 @@ export function maskRecordSensitiveData<T extends { customer?: { document?: stri
 function errorCode(error: unknown) { return error && typeof error === 'object' && 'code' in error ? String(error.code) : ''; }
 function serializeDate(value: Date) { return value.toISOString(); }
 
-async function validateReferences(tx: Prisma.TransactionClient, input: CreateInput | UpdateInput, current?: ExistingReferences) {
+async function validateReferences(tx: Prisma.TransactionClient, input: CreateInput | UpdateInput, current?: ExistingReferences, caseDepartment?: string | null) {
   const [reason, channel, subreason, assignee] = await Promise.all([
     tx.reason.findUnique({ where: { id: input.reasonId }, select: { id: true, name: true, active: true } }),
     tx.channel.findUnique({ where: { id: input.channelId }, select: { id: true, name: true, active: true } }),
     input.subreasonId ? tx.subreason.findUnique({ where: { id: input.subreasonId }, select: { id: true, reasonId: true, active: true } }) : null,
-    input.assigneeId ? tx.user.findUnique({ where: { id: input.assigneeId }, select: { id: true, name: true, active: true, approvedAt: true, role: true } }) : null,
+    input.assigneeId ? tx.user.findUnique({ where: { id: input.assigneeId }, select: { id: true, name: true, active: true, approvedAt: true, role: true, department: true } }) : null,
   ]);
   if (!reason || (!reason.active && reason.id !== current?.reasonId)) throw new SacRecordError('INACTIVE_REASON', 'Selecione um motivo ativo.', 422);
   if (!channel || (!channel.active && channel.id !== current?.channelId)) throw new SacRecordError('INACTIVE_CHANNEL', 'Selecione um canal ativo.', 422);
   if (input.subreasonId && (!subreason || subreason.reasonId !== reason.id || (!subreason.active && subreason.id !== current?.subreasonId))) throw new SacRecordError('INVALID_SUBREASON', 'Selecione um submotivo ativo pertencente ao motivo informado.', 422);
-  if (input.assigneeId && (!assignee || (!assignee.active && assignee.id !== current?.assigneeId) || !assignee.approvedAt || !['ADMIN', 'ANALYST'].includes(assignee.role))) throw new SacRecordError('INVALID_ASSIGNEE', 'Selecione um responsável disponível.', 422);
+  if (input.assigneeId) {
+    if (!assignee || (!assignee.active && assignee.id !== current?.assigneeId) || !assignee.approvedAt || !['ADMIN', 'ANALYST'].includes(assignee.role)) {
+      throw new SacRecordError('INVALID_ASSIGNEE', 'Selecione um responsável disponível.', 422);
+    }
+    if (assignee.role === 'ANALYST' && caseDepartment && assignee.department !== caseDepartment) {
+      throw new SacRecordError('ASSIGNEE_DEPARTMENT_MISMATCH', 'O responsável selecionado pertence a outro setor.', 422);
+    }
+  }
   return { reason, channel, assignee };
 }
 
-async function assertExternalTicketDecision(tx: Prisma.TransactionClient, externalTicket: string | null, allowDuplicate: boolean, excludeId?: string) {
+async function assertExternalTicketDecision(tx: Prisma.TransactionClient, externalTicket: string | null, allowDuplicate: boolean, caseDepartment?: string | null, excludeId?: string, userRole?: string) {
   if (!externalTicket || allowDuplicate) return;
-  const matches = await tx.sacRecord.count({ where: { externalTicket: { equals: externalTicket, mode: 'insensitive' }, ...(excludeId ? { id: { not: excludeId } } : {}) } });
+  const where: Prisma.SacRecordWhereInput = {
+    externalTicket: { equals: externalTicket, mode: 'insensitive' },
+    ...(excludeId ? { id: { not: excludeId } } : {}),
+    ...(userRole !== 'ADMIN' && caseDepartment ? { department: caseDepartment } : {}),
+  };
+  const matches = await tx.sacRecord.count({ where });
   if (matches) throw new SacRecordError('EXTERNAL_TICKET_DUPLICATE', 'Já existe um caso com este protocolo externo. Confirme se deseja continuar mesmo assim.', 409);
 }
 
@@ -101,9 +117,22 @@ function attentionWhere(input: ListInput['attention'], now: Date): Prisma.SacRec
   return variants[input];
 }
 
-function attentionSql(input: ListInput, now: Date) {
+function attentionSql(input: ListParsedInput, userRole: string, userDepartment: string | null, now: Date) {
   const { todayStart, tomorrowStart, nearDueEnd, staleBefore } = operationalBoundaries(now);
   const clauses: Prisma.Sql[] = [Prisma.sql`s."archivedAt" IS NULL`];
+  if (userRole !== 'ADMIN') {
+    if (userDepartment) {
+      clauses.push(Prisma.sql`s."department" = ${userDepartment}`);
+    } else {
+      clauses.push(Prisma.sql`1 = 0`);
+    }
+  } else if (input.department) {
+    if (input.department === 'unassigned' || input.department === 'none' || input.department === 'Sem setor definido') {
+      clauses.push(Prisma.sql`s."department" IS NULL`);
+    } else {
+      clauses.push(Prisma.sql`s."department" = ${input.department}`);
+    }
+  }
   if (input.status) clauses.push(Prisma.sql`s."status"::text = ${input.status}`);
   if (input.priority) clauses.push(Prisma.sql`s."priority"::text = ${input.priority}`);
   if (input.owner) clauses.push(Prisma.sql`u."name" = ${input.owner}`);
@@ -127,13 +156,13 @@ function attentionSql(input: ListInput, now: Date) {
   if (input.attention) clauses.push(attentionClauses[input.attention]);
   if (input.query) {
     const query = `%${input.query}%`;
-    clauses.push(Prisma.sql`(s."ticket" ILIKE ${query} OR s."externalTicket" ILIKE ${query} OR s."orderNumber" ILIKE ${query} OR c."name" ILIKE ${query} OR r."name" ILIKE ${query})`);
+    clauses.push(Prisma.sql`(s."ticket" ILIKE ${query} OR s."externalTicket" ILIKE ${query} OR s."orderNumber" ILIKE ${query} OR c."name" ILIKE ${query} OR r."name" ILIKE ${query} OR EXISTS (SELECT 1 FROM "SacReference" ref WHERE ref."recordId" = s."id" AND ref."value" ILIKE ${query}))`);
   }
   return { clauses, todayStart, tomorrowStart, nearDueEnd, staleBefore };
 }
 
-async function attentionPageIds(input: ListInput, now: Date) {
-  const { clauses, todayStart, tomorrowStart, nearDueEnd, staleBefore } = attentionSql(input, now);
+async function attentionPageIds(input: ListParsedInput, userRole: string, userDepartment: string | null, now: Date) {
+  const { clauses, todayStart, tomorrowStart, nearDueEnd, staleBefore } = attentionSql(input, userRole, userDepartment, now);
   const offset = (input.page - 1) * input.pageSize;
   return prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT s."id"
@@ -154,13 +183,49 @@ async function attentionPageIds(input: ListInput, now: Date) {
   `);
 }
 
-export async function listSacRecords(input: ListInput, now = new Date()) {
+export async function listSacRecords(
+  rawInput: ListInput,
+  userRoleOrNow?: string | Date,
+  userDepartment?: string | null,
+  nowArg = new Date(),
+) {
+  const input = listSacRecordsSchema.parse(rawInput);
+  let userRole: string;
+  let userDepartmentResolved: string | null;
+  let now: Date;
+  if (userRoleOrNow instanceof Date) {
+    userRole = 'ADMIN';
+    userDepartmentResolved = null;
+    now = userRoleOrNow;
+  } else {
+    userRole = userRoleOrNow ?? 'ADMIN';
+    userDepartmentResolved = userDepartment ?? null;
+    now = nowArg;
+  }
+
   const attention = attentionWhere(input.attention, now);
   const conditions: Prisma.SacRecordWhereInput[] = [];
   if (attention) conditions.push(attention);
   if (input.overdueBefore) conditions.push({ status: { in: ['PENDING', 'IN_PROGRESS'] }, dueAt: { lt: input.overdueBefore } });
+
+  let deptFilter: Prisma.SacRecordWhereInput = {};
+  if (userRole !== 'ADMIN') {
+    if (userDepartmentResolved) {
+      deptFilter = { department: userDepartmentResolved };
+    } else {
+      deptFilter = { id: '__NONE__' };
+    }
+  } else if (input.department) {
+    if (input.department === 'unassigned' || input.department === 'none' || input.department === 'Sem setor definido') {
+      deptFilter = { department: null };
+    } else {
+      deptFilter = { department: input.department };
+    }
+  }
+
   const where: Prisma.SacRecordWhereInput = {
     archivedAt: null,
+    ...deptFilter,
     status: input.status,
     priority: input.priority,
     ...(input.owner ? { assignee: { name: input.owner } } : {}),
@@ -179,8 +244,8 @@ export async function listSacRecords(input: ListInput, now = new Date()) {
     ] } : {}),
   };
   const boundaries = operationalBoundaries(now);
-  const openWhere: Prisma.SacRecordWhereInput = { archivedAt: null, status: { in: ['PENDING', 'IN_PROGRESS'] } };
-  const attentionIds = input.sort === 'attention' ? await attentionPageIds(input, now) : null;
+  const openWhere: Prisma.SacRecordWhereInput = { archivedAt: null, ...deptFilter, status: { in: ['PENDING', 'IN_PROGRESS'] } };
+  const attentionIds = input.sort === 'attention' ? await attentionPageIds(input, userRole, userDepartmentResolved, now) : null;
   const findWhere = attentionIds ? { id: { in: attentionIds.map(row => row.id) } } : where;
   const findTake = input.sort === 'attention' ? undefined : input.pageSize;
   const findSkip = input.sort === 'attention' ? undefined : (input.page - 1) * input.pageSize;
@@ -188,11 +253,11 @@ export async function listSacRecords(input: ListInput, now = new Date()) {
     ? [{ dueAt: 'asc' }, { priority: 'desc' }, { openedAt: 'asc' }, { id: 'asc' }]
     : [input.sort === 'customer' ? { customer: { name: input.order } } : { [input.sort]: input.order }, { id: 'asc' }];
   const [foundItems, total, owners, reasons, statusCounts, overdue, dueToday, nearDue, stale, unassigned, attentionTotal] = await prisma.$transaction([
-    prisma.sacRecord.findMany({ where: findWhere, skip: findSkip, take: findTake, orderBy, include: { customer: true, reason: true, subreason: true, references: { orderBy: { createdAt: 'asc' } }, assignee: { select: { id: true, name: true } } } }),
+    prisma.sacRecord.findMany({ where: findWhere, skip: findSkip, take: findTake, orderBy, include: { customer: true, reason: true, subreason: true, references: { orderBy: { createdAt: 'asc' } }, assignee: { select: { id: true, name: true, role: true, department: true } } } }),
     prisma.sacRecord.count({ where }),
-    prisma.user.findMany({ where: { assignedCases: { some: { archivedAt: null } }, deletedAt: null }, select: { name: true }, orderBy: { name: 'asc' } }),
+    prisma.user.findMany({ where: { assignedCases: { some: { archivedAt: null, ...deptFilter } }, deletedAt: null }, select: { name: true }, orderBy: { name: 'asc' } }),
     prisma.reason.findMany({ select: { name: true }, orderBy: { name: 'asc' } }),
-    prisma.sacRecord.groupBy({ by: ['status'], where: { archivedAt: null }, _count: true, orderBy: { status: 'asc' } }),
+    prisma.sacRecord.groupBy({ by: ['status'], where: { archivedAt: null, ...deptFilter }, _count: true, orderBy: { status: 'asc' } }),
     prisma.sacRecord.count({ where: { ...openWhere, dueAt: { lt: boundaries.todayStart } } }),
     prisma.sacRecord.count({ where: { ...openWhere, dueAt: { gte: boundaries.todayStart, lt: boundaries.tomorrowStart } } }),
     prisma.sacRecord.count({ where: { ...openWhere, dueAt: { gte: boundaries.tomorrowStart, lt: boundaries.nearDueEnd } } }),
@@ -206,33 +271,95 @@ export async function listSacRecords(input: ListInput, now = new Date()) {
   return { items, page: input.page, pageSize: input.pageSize, total, serverNow: now, operationalConfig: { timezone: 'America/Sao_Paulo', nearDueDays: 2, staleAfterDays: 3 }, options: { owners: [...new Set(owners.map(owner => owner.name))], reasons: reasons.map(reason => reason.name) }, counts: { ...Object.fromEntries(statusCounts.map(group => [group.status, group._count])), overdue, dueToday, nearDue, stale, unassigned, noDue: 0, attention: attentionTotal } };
 }
 
-export async function getSacRecord(recordId: string) {
+export async function getSacRecord(recordId: string, userRole: string = 'ADMIN', userDepartment?: string | null) {
   const record = await prisma.sacRecord.findFirst({ where: { id: recordId, archivedAt: null }, include: recordInclude });
   if (!record) throw new SacRecordError('SAC_RECORD_NOT_FOUND', 'Registro não encontrado.', 404);
+  if (userRole !== 'ADMIN' && userDepartment !== undefined) {
+    if (!record.department || record.department !== userDepartment) {
+      throw new SacRecordError('SAC_RECORD_NOT_FOUND', 'Registro não encontrado.', 404);
+    }
+  }
   return maskRecordSensitiveData({ ...record, operational: classifyOperationalAttention(record) });
 }
 
-export async function checkExternalTicket(value: string, excludeId?: string) {
-  const count = await prisma.sacRecord.count({ where: { archivedAt: null, externalTicket: { equals: value, mode: 'insensitive' }, ...(excludeId ? { id: { not: excludeId } } : {}) } });
+export async function checkExternalTicket(value: string, userRole?: string, userDepartment?: string | null, excludeId?: string) {
+  const where: Prisma.SacRecordWhereInput = {
+    archivedAt: null,
+    externalTicket: { equals: value, mode: 'insensitive' },
+    ...(userRole !== 'ADMIN' && userDepartment ? { department: userDepartment } : {}),
+    ...(excludeId ? { id: { not: excludeId } } : {}),
+  };
+  const count = await prisma.sacRecord.count({ where });
   return { duplicate: count > 0 };
 }
 
-export async function searchCustomers(query: string) {
+export async function searchCustomers(query: string, userRole?: string, userDepartment?: string | null) {
+  const where: Prisma.CustomerWhereInput = {
+    archivedAt: null,
+    ...(query ? { name: { contains: query, mode: 'insensitive' } } : {}),
+    ...(userRole !== 'ADMIN' && userDepartment ? { records: { some: { department: userDepartment, archivedAt: null } } } : {}),
+  };
   return prisma.customer.findMany({
-    where: { archivedAt: null, ...(query ? { name: { contains: query, mode: 'insensitive' } } : {}) },
-    select: { id: true, name: true }, orderBy: [{ name: 'asc' }, { id: 'asc' }], take: 10,
+    where,
+    select: { id: true, name: true },
+    orderBy: [{ name: 'asc' }, { id: 'asc' }],
+    take: 10,
   });
 }
 
-export async function createSacRecord(input: CreateInput, actorId: string, idempotencyKey: string, attachments: StoredAttachment[] = []) {
+export async function createSacRecord(
+  input: CreateInput,
+  actorId: string,
+  roleOrIdempotencyKey: string = 'ADMIN',
+  departmentOrAttachments?: string | null | StoredAttachment[],
+  keyOrAttachments?: string | StoredAttachment[],
+  maybeAttachments: StoredAttachment[] = [],
+) {
+  let actorRole: string;
+  let actorDepartment: string | null;
+  let idempotencyKey: string;
+  let attachments: StoredAttachment[];
+  const isExplicitRole = roleOrIdempotencyKey === 'ADMIN' || roleOrIdempotencyKey === 'ANALYST' || roleOrIdempotencyKey === 'VIEWER';
+
+  if (isExplicitRole) {
+    actorRole = roleOrIdempotencyKey;
+    actorDepartment = typeof departmentOrAttachments === 'string' ? departmentOrAttachments : null;
+    idempotencyKey = typeof keyOrAttachments === 'string' ? keyOrAttachments : '';
+    attachments = maybeAttachments;
+  } else {
+    // Called as createSacRecord(input, actorId, idempotencyKey, attachments)
+    actorRole = 'ADMIN';
+    actorDepartment = null;
+    idempotencyKey = roleOrIdempotencyKey;
+    attachments = Array.isArray(departmentOrAttachments) ? departmentOrAttachments : (Array.isArray(keyOrAttachments) ? keyOrAttachments : []);
+  }
+
+  let caseDepartment: string;
+  if (actorRole === 'ADMIN') {
+    if (!input.department || !input.department.trim()) {
+      if (!isExplicitRole) {
+        caseDepartment = 'Atendimento';
+      } else {
+        throw new SacRecordError('DEPARTMENT_REQUIRED', 'Informe o setor do caso.', 422);
+      }
+    } else {
+      caseDepartment = input.department.trim();
+    }
+  } else {
+    if (!actorDepartment) {
+      throw new SacRecordError('USER_DEPARTMENT_REQUIRED', 'Seu usuário não possui um setor vinculado. Solicite a vinculação a um administrador.', 422);
+    }
+    caseDepartment = actorDepartment;
+  }
+
   const existing = await prisma.sacRecord.findUnique({ where: { idempotencyKey }, include: recordInclude });
   if (existing) return { record: maskRecordSensitiveData({ ...existing, operational: classifyOperationalAttention(existing) }), created: false };
   try {
     const result = await prisma.$transaction(async tx => {
       const replay = await tx.sacRecord.findUnique({ where: { idempotencyKey }, include: recordInclude });
       if (replay) return { record: maskRecordSensitiveData({ ...replay, operational: classifyOperationalAttention(replay) }), created: false };
-      const { reason, channel, assignee } = await validateReferences(tx, input);
-      await assertExternalTicketDecision(tx, input.externalTicket, input.allowDuplicateExternalTicket);
+      const { reason, channel, assignee } = await validateReferences(tx, input, undefined, caseDepartment);
+      await assertExternalTicketDecision(tx, input.externalTicket, input.allowDuplicateExternalTicket, caseDepartment, undefined, actorRole);
       const customer = await tx.customer.upsert({ where: { normalizedName: normalizeCatalogName(input.customerName) }, update: {}, create: { name: input.customerName, normalizedName: normalizeCatalogName(input.customerName) } });
       const year = input.openedAt.getUTCFullYear();
       const counter = await tx.ticketCounter.upsert({ where: { year }, create: { year, value: 1 }, update: { value: { increment: 1 } } });
@@ -278,7 +405,7 @@ export async function createSacRecord(input: CreateInput, actorId: string, idemp
 
       const created = await tx.sacRecord.create({
         data: {
-          ticket, idempotencyKey, orderNumber: effectiveOrderNumber, externalTicket: effectiveExternalTicket,
+          ticket, idempotencyKey, department: caseDepartment, orderNumber: effectiveOrderNumber, externalTicket: effectiveExternalTicket,
           description: input.description, internalNote: input.internalNote, identifiedCause: input.identifiedCause,
           responsibleArea: input.responsibleArea, correctiveAction: input.correctiveAction, priority: input.priority,
           channel: channel.name, channelId: channel.id, openedAt: input.openedAt, dueAt: input.dueAt,
@@ -305,7 +432,7 @@ export async function createSacRecord(input: CreateInput, actorId: string, idemp
           recordId: created.id,
           actorId,
           eventType: 'CREATED',
-          summary: `Registro ${ticket} criado.${input.importSessionId ? ' Criado a partir de formulário importado.' : ''} Responsável: ${assignee?.name ?? 'Sem responsável'}. Status inicial: PENDING.`,
+          summary: `Registro ${ticket} criado no setor ${caseDepartment}.${input.importSessionId ? ' Criado a partir de formulário importado.' : ''} Responsável: ${assignee?.name ?? 'Sem responsável'}. Status inicial: PENDING.`,
           createdAt: activityAt,
         },
       });
@@ -332,14 +459,40 @@ export async function createSacRecord(input: CreateInput, actorId: string, idemp
   }
 }
 
-export async function updateSacRecord(recordId: string, input: UpdateInput, actorId: string, attachments: StoredAttachment[] = []) {
+export async function updateSacRecord(
+  recordId: string,
+  input: UpdateInput,
+  actorId: string,
+  actorRoleOrAttachments?: string | StoredAttachment[],
+  actorDepartment?: string | null,
+  maybeAttachments: StoredAttachment[] = [],
+) {
+  let actorRole: string;
+  let actorDept: string | null;
+  let attachments: StoredAttachment[];
+
+  if (Array.isArray(actorRoleOrAttachments)) {
+    actorRole = 'ADMIN';
+    actorDept = null;
+    attachments = actorRoleOrAttachments;
+  } else {
+    actorRole = actorRoleOrAttachments ?? 'ADMIN';
+    actorDept = actorDepartment ?? null;
+    attachments = maybeAttachments;
+  }
+
   return prisma.$transaction(async tx => {
     const current = await tx.sacRecord.findFirst({ where: { id: recordId, archivedAt: null }, include: { items: true, _count: { select: { attachments: true } } } });
     if (!current) throw new SacRecordError('SAC_RECORD_NOT_FOUND', 'Registro não encontrado.', 404);
+    if (actorRole !== 'ADMIN' && actorDept !== undefined) {
+      if (!current.department || current.department !== actorDept) {
+        throw new SacRecordError('SAC_RECORD_NOT_FOUND', 'Registro não encontrado.', 404);
+      }
+    }
     if (current.updatedAt.getTime() !== input.updatedAt.getTime()) throw new SacRecordError('STALE_SAC_RECORD', 'Este registro foi atualizado por outro usuário. Recarregue os dados antes de salvar novamente.', 409);
     if (current._count.attachments + attachments.length > MAX_ATTACHMENT_COUNT) throw new SacRecordError('TOO_MANY_ATTACHMENTS', `Mantenha no máximo ${MAX_ATTACHMENT_COUNT} evidências por registro.`, 422);
-    const references = await validateReferences(tx, input, current);
-    await assertExternalTicketDecision(tx, input.externalTicket, input.allowDuplicateExternalTicket, recordId);
+    const references = await validateReferences(tx, input, current, current.department);
+    await assertExternalTicketDecision(tx, input.externalTicket, input.allowDuplicateExternalTicket, current.department, recordId, actorRole);
     const customer = await tx.customer.upsert({ where: { normalizedName: normalizeCatalogName(input.customerName) }, update: {}, create: { name: input.customerName, normalizedName: normalizeCatalogName(input.customerName) } });
     const activityAt = new Date();
 
@@ -424,9 +577,14 @@ export async function updateSacRecord(recordId: string, input: UpdateInput, acto
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
 
-async function currentForOperation(tx: Prisma.TransactionClient, recordId: string, updatedAt: Date) {
-  const current = await tx.sacRecord.findFirst({ where: { id: recordId, archivedAt: null } });
+async function currentForOperation(tx: Prisma.TransactionClient, recordId: string, updatedAt: Date, actorRole?: string, actorDepartment?: string | null) {
+  const current = await tx.sacRecord.findFirst({ where: { id: recordId, archivedAt: null }, include: { assignee: true } });
   if (!current) throw new SacRecordError('SAC_RECORD_NOT_FOUND', 'Registro não encontrado.', 404);
+  if (actorRole && actorRole !== 'ADMIN' && actorDepartment !== undefined) {
+    if (!current.department || current.department !== actorDepartment) {
+      throw new SacRecordError('SAC_RECORD_NOT_FOUND', 'Registro não encontrado.', 404);
+    }
+  }
   if (current.updatedAt.getTime() !== updatedAt.getTime()) throw new SacRecordError('STALE_SAC_RECORD', 'Este caso foi atualizado por outro usuário. Recarregue as informações antes de continuar.', 409);
   return current;
 }
@@ -436,9 +594,12 @@ async function finishOperation(tx: Prisma.TransactionClient, recordId: string) {
   return { ...record, operational: classifyOperationalAttention(record) };
 }
 
-async function operationalUser(tx: Prisma.TransactionClient, userId: string) {
-  const user = await tx.user.findUnique({ where: { id: userId }, select: { id: true, name: true, active: true, approvedAt: true, role: true } });
+async function operationalUser(tx: Prisma.TransactionClient, userId: string, expectedDepartment?: string | null) {
+  const user = await tx.user.findUnique({ where: { id: userId }, select: { id: true, name: true, active: true, approvedAt: true, role: true, department: true } });
   if (!user || !user.active || !user.approvedAt || !['ADMIN', 'ANALYST'].includes(user.role)) throw new SacRecordError('INVALID_ASSIGNEE', 'Selecione um responsável ativo, aprovado e com permissão operacional.', 422);
+  if (user.role === 'ANALYST' && expectedDepartment && user.department !== expectedDepartment) {
+    throw new SacRecordError('ASSIGNEE_DEPARTMENT_MISMATCH', 'O responsável selecionado pertence a outro setor.', 422);
+  }
   return user;
 }
 
@@ -446,11 +607,11 @@ function assertOperationalState(status: string) {
   if (status === 'COMPLETED' || status === 'CANCELLED') throw new SacRecordError('CASE_NOT_OPERATIONAL', 'Reabra ou reative o caso antes de alterar seus dados operacionais.', 422);
 }
 
-export async function assignSacRecord(recordId: string, input: AssignmentInput, actorId: string) {
+export async function assignSacRecord(recordId: string, input: AssignmentInput, actorId: string, actorRole: string = 'ADMIN', actorDepartment?: string | null) {
   return prisma.$transaction(async tx => {
-    const current = await currentForOperation(tx, recordId, input.updatedAt);
+    const current = await currentForOperation(tx, recordId, input.updatedAt, actorRole, actorDepartment);
     assertOperationalState(current.status);
-    const next = input.assigneeId ? await operationalUser(tx, input.assigneeId) : null;
+    const next = input.assigneeId ? await operationalUser(tx, input.assigneeId, current.department) : null;
     if (current.assigneeId === input.assigneeId) throw new SacRecordError('ASSIGNEE_UNCHANGED', 'O responsável informado já está atribuído ao caso.', 422);
     const previous = current.assigneeId ? await tx.user.findUnique({ where: { id: current.assigneeId }, select: { name: true } }) : null;
     const activityAt = new Date();
@@ -463,9 +624,10 @@ export async function assignSacRecord(recordId: string, input: AssignmentInput, 
   });
 }
 
-export async function takeSacRecord(recordId: string, input: TakeInput, actorId: string) {
+export async function takeSacRecord(recordId: string, input: TakeInput, actorId: string, actorRole: string = 'ADMIN', actorDepartment?: string | null) {
   return prisma.$transaction(async tx => {
-    const current = await currentForOperation(tx, recordId, input.updatedAt); const actor = await operationalUser(tx, actorId);
+    const current = await currentForOperation(tx, recordId, input.updatedAt, actorRole, actorDepartment);
+    const actor = await operationalUser(tx, actorId, current.department);
     assertOperationalState(current.status);
     if (current.assigneeId) throw new SacRecordError('CASE_ALREADY_ASSIGNED', 'O caso já possui responsável.', 409);
     const activityAt = new Date();
@@ -477,9 +639,9 @@ export async function takeSacRecord(recordId: string, input: TakeInput, actorId:
 }
 
 const priorityRank = { LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 } as const;
-export async function changeSacPriority(recordId: string, input: PriorityInput, actorId: string) {
+export async function changeSacPriority(recordId: string, input: PriorityInput, actorId: string, actorRole: string = 'ADMIN', actorDepartment?: string | null) {
   return prisma.$transaction(async tx => {
-    const current = await currentForOperation(tx, recordId, input.updatedAt);
+    const current = await currentForOperation(tx, recordId, input.updatedAt, actorRole, actorDepartment);
     assertOperationalState(current.status);
     if (current.priority === input.priority) throw new SacRecordError('PRIORITY_UNCHANGED', 'Selecione uma prioridade diferente.', 422);
     if (priorityRank[input.priority] < priorityRank[current.priority] && !input.justification?.trim()) throw new SacRecordError('JUSTIFICATION_REQUIRED', 'Informe a justificativa para reduzir a prioridade.', 422);
@@ -492,9 +654,9 @@ export async function changeSacPriority(recordId: string, input: PriorityInput, 
   });
 }
 
-export async function changeSacDueDate(recordId: string, input: DueDateInput, actorId: string) {
+export async function changeSacDueDate(recordId: string, input: DueDateInput, actorId: string, actorRole: string = 'ADMIN', actorDepartment?: string | null) {
   return prisma.$transaction(async tx => {
-    const current = await currentForOperation(tx, recordId, input.updatedAt);
+    const current = await currentForOperation(tx, recordId, input.updatedAt, actorRole, actorDepartment);
     assertOperationalState(current.status);
     if (input.dueAt < current.openedAt) throw new SacRecordError('INVALID_DUE_DATE', 'O prazo não pode ser anterior à abertura.', 422);
     if (input.dueAt.getTime() === current.dueAt.getTime()) throw new SacRecordError('DUE_DATE_UNCHANGED', 'Informe um prazo diferente.', 422);
@@ -509,11 +671,11 @@ export async function changeSacDueDate(recordId: string, input: DueDateInput, ac
 }
 
 export function sanitizeComment(value: string) { return value.replace(/<[^>]*>/g, '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').trim(); }
-export async function addSacComment(recordId: string, input: CommentInput, actorId: string) {
+export async function addSacComment(recordId: string, input: CommentInput, actorId: string, actorRole: string = 'ADMIN', actorDepartment?: string | null) {
   const body = sanitizeComment(input.body);
   if (!body) throw new SacRecordError('EMPTY_COMMENT', 'Escreva um comentário.', 422);
   return prisma.$transaction(async tx => {
-    const current = await currentForOperation(tx, recordId, input.updatedAt);
+    const current = await currentForOperation(tx, recordId, input.updatedAt, actorRole, actorDepartment);
     const comment = await tx.comment.create({ data: { recordId, authorId: actorId, body }, include: { author: { select: { id: true, name: true } } } });
     const activityAt = new Date();
     const changed = await tx.sacRecord.updateMany({ where: { id: recordId, updatedAt: input.updatedAt }, data: { updatedAt: activityAt, lastOperationalActivityAt: activityAt } });
@@ -524,44 +686,81 @@ export async function addSacComment(recordId: string, input: CommentInput, actor
   });
 }
 
-export async function getSacHistory(recordId: string, input: HistoryInput) {
-  const where = { recordId, record: { archivedAt: null } };
-  const [items, total] = await prisma.$transaction([
+export async function getSacHistory(recordId: string, input: HistoryInput, userRole: string = 'ADMIN', userDepartment?: string | null) {
+  const record = await prisma.sacRecord.findFirst({
+    where: {
+      id: recordId,
+      ...(userRole === 'ADMIN' ? {} : { archivedAt: null }),
+    },
+    select: { department: true, archivedAt: true },
+  });
+  if (!record) throw new SacRecordError('SAC_RECORD_NOT_FOUND', 'Registro não encontrado.', 404);
+  if (userRole !== 'ADMIN' && userDepartment !== undefined) {
+    if (!record.department || record.department !== userDepartment) {
+      throw new SacRecordError('SAC_RECORD_NOT_FOUND', 'Registro não encontrado.', 404);
+    }
+  }
+  const where = {
+    recordId,
+    ...(userRole === 'ADMIN' ? {} : { record: { archivedAt: null } }),
+  };
+  const [items, total] = await Promise.all([
     prisma.activityLog.findMany({ where, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], skip: (input.page - 1) * input.pageSize, take: input.pageSize, include: { actor: { select: { id: true, name: true } } } }),
     prisma.activityLog.count({ where }),
   ]);
   return { items, total, page: input.page, pageSize: input.pageSize };
 }
 
-export async function changeSacStatus(recordId: string, input: ChangeStatusInput, actorId: string, actorRole: 'ADMIN' | 'ANALYST') {
+export async function changeSacStatus(recordId: string, input: ChangeStatusInput, actorId: string, actorRole: 'ADMIN' | 'ANALYST' = 'ADMIN', actorDepartment?: string | null) {
   return prisma.$transaction(async tx => {
-    const current = await currentForOperation(tx, recordId, input.updatedAt);
+    const current = await currentForOperation(tx, recordId, input.updatedAt, actorRole, actorDepartment);
     try { assertStatusTransition(current.status, input.status, actorRole); }
     catch (error) { const message = (error as Error).message; throw new SacRecordError('INVALID_STATUS_TRANSITION', message, message.includes('Somente administradores') ? 403 : 422); }
     if (input.status === 'COMPLETED') {
-      try { assertCanComplete(input.solutionSummary); } catch (error) { throw new SacRecordError('COMPLETION_INCOMPLETE', (error as Error).message, 422); }
-      if (!input.identifiedCause?.trim() || !input.responsibleArea?.trim() || !input.correctiveAction?.trim()) throw new SacRecordError('COMPLETION_INCOMPLETE', 'Informe causa, área responsável e ação corretiva.', 422);
+      const effectiveSolution = input.solutionSummary !== undefined && input.solutionSummary !== null && input.solutionSummary.trim() !== ''
+        ? input.solutionSummary.trim()
+        : current.solutionSummary;
+
+      try {
+        assertCanComplete(effectiveSolution ?? undefined);
+      } catch (error) {
+        throw new SacRecordError('COMPLETION_INCOMPLETE', (error as Error).message, 422);
+      }
     }
     if (current.status === 'COMPLETED') { try { assertCanReopen(input.reason); } catch (error) { throw new SacRecordError('JUSTIFICATION_REQUIRED', (error as Error).message, 422); } }
     if (input.status === 'CANCELLED') { try { assertCanCancel(input.reason); } catch (error) { throw new SacRecordError('JUSTIFICATION_REQUIRED', (error as Error).message, 422); } }
     if (current.status === 'CANCELLED') { try { assertCanReactivate(input.reason); } catch (error) { throw new SacRecordError('JUSTIFICATION_REQUIRED', (error as Error).message, 422); } }
     let assumedBy: { id: string; name: string } | null = null;
-    if (input.assumeIfUnassigned && !current.assigneeId) assumedBy = await operationalUser(tx, actorId);
+    if (input.assumeIfUnassigned && !current.assigneeId) assumedBy = await operationalUser(tx, actorId, current.department);
     if (current.status === 'PENDING' && input.status === 'IN_PROGRESS' && !current.assigneeId && !assumedBy) throw new SacRecordError('ASSIGNEE_REQUIRED', 'Atribua um responsável ou assuma o caso antes de iniciar o atendimento.', 422);
     const eventType = input.status === 'COMPLETED' ? 'COMPLETED' : input.status === 'CANCELLED' ? 'CANCELLED' : current.status === 'COMPLETED' ? 'REOPENED' : current.status === 'CANCELLED' ? 'REACTIVATED' : 'SERVICE_STARTED';
     const activityAt = new Date();
+
+    const effectiveSolution = input.status === 'COMPLETED'
+      ? (input.solutionSummary !== undefined && input.solutionSummary !== null && input.solutionSummary.trim() !== '' ? input.solutionSummary.trim() : current.solutionSummary)
+      : current.solutionSummary;
+    const effectiveCause = input.status === 'COMPLETED'
+      ? (input.identifiedCause !== undefined && input.identifiedCause !== null && input.identifiedCause.trim() !== '' ? input.identifiedCause.trim() : current.identifiedCause)
+      : current.identifiedCause;
+    const effectiveArea = input.status === 'COMPLETED'
+      ? (input.responsibleArea !== undefined && input.responsibleArea !== null && input.responsibleArea.trim() !== '' ? input.responsibleArea.trim() : current.responsibleArea)
+      : current.responsibleArea;
+    const effectiveAction = input.status === 'COMPLETED'
+      ? (input.correctiveAction !== undefined && input.correctiveAction !== null && input.correctiveAction.trim() !== '' ? input.correctiveAction.trim() : current.correctiveAction)
+      : current.correctiveAction;
+
     const changed = await tx.sacRecord.updateMany({ where: { id: recordId, updatedAt: input.updatedAt }, data: {
       status: input.status, assigneeId: assumedBy?.id ?? current.assigneeId,
-      solutionSummary: input.status === 'COMPLETED' ? input.solutionSummary : current.solutionSummary,
-      identifiedCause: input.status === 'COMPLETED' ? input.identifiedCause : current.identifiedCause,
-      responsibleArea: input.status === 'COMPLETED' ? input.responsibleArea : current.responsibleArea,
-      correctiveAction: input.status === 'COMPLETED' ? input.correctiveAction : current.correctiveAction,
+      solutionSummary: effectiveSolution,
+      identifiedCause: effectiveCause,
+      responsibleArea: effectiveArea,
+      correctiveAction: effectiveAction,
       reopenedReason: current.status === 'COMPLETED' ? input.reason : current.reopenedReason,
       cancellationReason: input.status === 'CANCELLED' ? input.reason : current.cancellationReason,
-      completedAt: input.status === 'COMPLETED' ? activityAt : current.completedAt, lastOperationalActivityAt: activityAt,
+      completedAt: input.status === 'COMPLETED' ? activityAt : (input.status === 'CANCELLED' ? (current.completedAt ?? activityAt) : null), lastOperationalActivityAt: activityAt,
     } });
     if (changed.count !== 1) throw new SacRecordError('STALE_SAC_RECORD', 'Este caso foi atualizado por outro usuário. Recarregue as informações antes de continuar.', 409);
-    await tx.activityLog.create({ data: { recordId, actorId, eventType, summary: `Status alterado de ${current.status} para ${input.status}.`, before: { status: current.status, assigneeId: current.assigneeId }, after: { status: input.status, reason: input.reason, assumedBy: assumedBy?.name, solutionSummary: input.solutionSummary, identifiedCause: input.identifiedCause, responsibleArea: input.responsibleArea, correctiveAction: input.correctiveAction }, createdAt: activityAt } });
+    await tx.activityLog.create({ data: { recordId, actorId, eventType, summary: `Status alterado de ${current.status} para ${input.status}.`, before: { status: current.status, assigneeId: current.assigneeId }, after: { status: input.status, reason: input.reason, assumedBy: assumedBy?.name, solutionSummary: input.status === 'COMPLETED' ? effectiveSolution : undefined, identifiedCause: input.status === 'COMPLETED' ? effectiveCause : undefined, responsibleArea: input.status === 'COMPLETED' ? effectiveArea : undefined, correctiveAction: input.status === 'COMPLETED' ? effectiveAction : undefined }, createdAt: activityAt } });
     const notificationType = eventType === 'REOPENED' ? 'REOPENED' : eventType === 'CANCELLED' ? 'CANCELLED' : eventType === 'COMPLETED' ? 'COMPLETED' : 'STATUS_CHANGED';
     const notificationTitle = eventType === 'REOPENED' ? 'Caso reaberto' : eventType === 'CANCELLED' ? 'Caso cancelado' : eventType === 'COMPLETED' ? 'Caso concluído' : 'Status alterado';
     await createCaseNotification(tx, { recipientId: assumedBy?.id ?? current.assigneeId, actorId, recordId, ticket: current.ticket, type: notificationType, title: notificationTitle, summary: `${current.ticket} teve o status alterado para ${input.status}.`, metadata: { ticket: current.ticket, status: input.status } });
@@ -569,7 +768,135 @@ export async function changeSacStatus(recordId: string, input: ChangeStatusInput
   });
 }
 
-export async function revealSacRecordSensitive(recordId: string, field: string | undefined, actorId: string) {
+export async function updateSacTreatment(recordId: string, input: z.infer<typeof updateTreatmentSchema>, actorId: string, actorRole: string = 'ADMIN', actorDepartment?: string | null) {
+  return prisma.$transaction(async tx => {
+    const current = await currentForOperation(tx, recordId, input.updatedAt, actorRole, actorDepartment);
+    assertOperationalState(current.status);
+    const activityAt = new Date();
+    const changed = await tx.sacRecord.updateMany({
+      where: { id: recordId, updatedAt: input.updatedAt },
+      data: {
+        solutionSummary: input.solutionSummary !== undefined ? input.solutionSummary : current.solutionSummary,
+        identifiedCause: input.identifiedCause !== undefined ? input.identifiedCause : current.identifiedCause,
+        responsibleArea: input.responsibleArea !== undefined ? input.responsibleArea : current.responsibleArea,
+        correctiveAction: input.correctiveAction !== undefined ? input.correctiveAction : current.correctiveAction,
+        lastOperationalActivityAt: activityAt,
+      },
+    });
+    if (changed.count !== 1) throw new SacRecordError('STALE_SAC_RECORD', 'Este caso foi atualizado por outro usuário. Recarregue as informações antes de continuar.', 409);
+
+    await tx.activityLog.create({
+      data: {
+        recordId,
+        actorId,
+        eventType: 'TREATMENT_UPDATED',
+        summary: 'Resposta e tratativa operacional registradas.',
+        before: {
+          solutionSummary: current.solutionSummary,
+          identifiedCause: current.identifiedCause,
+          responsibleArea: current.responsibleArea,
+          correctiveAction: current.correctiveAction,
+        },
+        after: {
+          solutionSummary: input.solutionSummary !== undefined ? input.solutionSummary : current.solutionSummary,
+          identifiedCause: input.identifiedCause !== undefined ? input.identifiedCause : current.identifiedCause,
+          responsibleArea: input.responsibleArea !== undefined ? input.responsibleArea : current.responsibleArea,
+          correctiveAction: input.correctiveAction !== undefined ? input.correctiveAction : current.correctiveAction,
+        },
+        createdAt: activityAt,
+      },
+    });
+
+    return finishOperation(tx, recordId);
+  });
+}
+
+export async function transferSacRecordDepartment(recordId: string, input: TransferDepartmentInput, actorId: string) {
+  return prisma.$transaction(async tx => {
+    const current = await tx.sacRecord.findFirst({
+      where: { id: recordId, archivedAt: null },
+      include: { assignee: true },
+    });
+    if (!current) throw new SacRecordError('SAC_RECORD_NOT_FOUND', 'Registro não encontrado.', 404);
+
+    const targetDepartment = input.department.trim();
+    if (!targetDepartment) throw new SacRecordError('DEPARTMENT_REQUIRED', 'Informe o novo setor.', 422);
+    if (current.department === targetDepartment) {
+      throw new SacRecordError('DEPARTMENT_UNCHANGED', 'O caso já pertence a este setor.', 422);
+    }
+
+    const activityAt = new Date();
+    let newAssigneeId = current.assigneeId;
+    let unassigned = false;
+
+    // Se o responsável atual for um ANALYST e pertencer a outro setor, desvincula o responsável
+    if (current.assignee && current.assignee.role === 'ANALYST' && current.assignee.department !== targetDepartment) {
+      newAssigneeId = null;
+      unassigned = true;
+    }
+
+    const previousDepartment = current.department;
+    await tx.sacRecord.update({
+      where: { id: recordId },
+      data: {
+        department: targetDepartment,
+        assigneeId: newAssigneeId,
+        lastOperationalActivityAt: activityAt,
+      },
+    });
+
+    await tx.activityLog.create({
+      data: {
+        recordId,
+        actorId,
+        eventType: 'DEPARTMENT_TRANSFERRED',
+        summary: previousDepartment
+          ? `Setor transferido de ${previousDepartment} para ${targetDepartment}.${unassigned ? ' Responsável desvinculado por divergência de setor.' : ''}`
+          : `Setor definido como ${targetDepartment}.${unassigned ? ' Responsável desvinculado por divergência de setor.' : ''}`,
+        before: { department: previousDepartment, assigneeId: current.assigneeId },
+        after: { department: targetDepartment, assigneeId: newAssigneeId, justification: input.justification ?? null },
+        createdAt: activityAt,
+      },
+    });
+
+    await tx.adminAudit.create({
+      data: {
+        type: 'CASES_TRANSFERRED',
+        actorId,
+        targetUserId: current.assigneeId ?? null,
+        justification: input.justification ?? null,
+        metadata: {
+          recordId,
+          ticket: current.ticket,
+          previousDepartment,
+          newDepartment: targetDepartment,
+          unassigned,
+        },
+      },
+    });
+
+    if (newAssigneeId && newAssigneeId !== actorId) {
+      await createCaseNotification(tx, {
+        recipientId: newAssigneeId,
+        actorId,
+        recordId,
+        ticket: current.ticket,
+        type: 'STATUS_CHANGED',
+        title: 'Setor do caso alterado',
+        summary: `${current.ticket} foi transferido para o setor ${targetDepartment}.`,
+        metadata: { ticket: current.ticket, department: targetDepartment },
+      });
+    }
+
+    return finishOperation(tx, recordId);
+  });
+}
+
+export async function revealSacRecordSensitive(recordId: string, field: string | undefined, actorId: string, userRole: string = 'ADMIN', userDepartment?: string | null) {
+  if (userRole !== 'ADMIN') {
+    throw new SacRecordError('FORBIDDEN', 'Apenas administradores podem revelar dados sensíveis.', 403);
+  }
+
   const record = await prisma.sacRecord.findFirst({
     where: { id: recordId, archivedAt: null },
     include: { customer: true },

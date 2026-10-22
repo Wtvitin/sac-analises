@@ -37,7 +37,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       }
     }
 
-    req.auth = { userId: user.id, role: user.role, sessionId: session!.id }; return next();
+    req.auth = { userId: user.id, role: user.role, department: user.department ?? null, sessionId: session!.id }; return next();
   } catch { return res.status(401).json({ error: { code: 'INVALID_SESSION', message: 'Sua sessão expirou. Entre novamente.' } }); }
 }
 

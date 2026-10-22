@@ -22,6 +22,7 @@ export const analyticsFilterSchema = z.object({
   channelId: z.string().trim().min(1).optional(),
   priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).optional(),
   status: z.enum(['PENDING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED']).optional(),
+  department: z.string().trim().max(100).optional(),
 }).superRefine((data, ctx) => {
   if (data.startDate) {
     const parsedStart = parseDateInput(data.startDate);

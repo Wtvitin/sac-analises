@@ -72,7 +72,11 @@ describe('analytics HTTP routes', () => {
       isEmptyDatabase: false,
       metrics: { currentPending: 5 },
     });
-    expect(mock.getAnalyticsDashboard).toHaveBeenCalledWith(expect.objectContaining({ period: '30d' }));
+    expect(mock.getAnalyticsDashboard).toHaveBeenCalledWith(
+      expect.objectContaining({ period: '30d' }),
+      'ADMIN',
+      undefined,
+    );
   });
 
   it('rejeita períodos personalizados com datas invertidas', async () => {

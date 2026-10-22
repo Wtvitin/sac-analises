@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
-import { civilDateParts, civilDayNumber, operationalBoundaries, zonedDayStart } from '../../domain/operational-attention.js';
+import { civilDateParts, civilDayNumber, operationalBoundaries, resolveClosedDate, zonedDayStart } from '../../domain/operational-attention.js';
+import { maskCpfCnpj } from '../../lib/privacy/privacy.service.js';
 import type { AnalyticsFilters, AnalyticsPeriod } from './analytics.schema.js';
 
 export const ANALYTICS_TIME_ZONE = 'America/Sao_Paulo';
@@ -167,7 +168,7 @@ export function calculateComparison(current: number, previous: number): Comparis
   return { current, previous, change, percentageChange };
 }
 
-function buildBaseWhere(filters: AnalyticsFilters) {
+function buildBaseWhere(filters: AnalyticsFilters, userRole?: string, userDepartment?: string | null) {
   const clauses: Prisma.Sql[] = [Prisma.sql`s."archivedAt" IS NULL`];
   if (filters.assigneeId) clauses.push(Prisma.sql`s."assigneeId" = ${filters.assigneeId}`);
   if (filters.reasonId) clauses.push(Prisma.sql`s."reasonId" = ${filters.reasonId}`);
@@ -175,6 +176,21 @@ function buildBaseWhere(filters: AnalyticsFilters) {
   if (filters.channelId) clauses.push(Prisma.sql`s."channelId" = ${filters.channelId}`);
   if (filters.priority) clauses.push(Prisma.sql`s."priority"::text = ${filters.priority}`);
   if (filters.status) clauses.push(Prisma.sql`s."status"::text = ${filters.status}`);
+
+  if (userRole !== 'ADMIN') {
+    if (userDepartment) {
+      clauses.push(Prisma.sql`s."department" = ${userDepartment}`);
+    } else {
+      clauses.push(Prisma.sql`1 = 0`);
+    }
+  } else if (filters.department) {
+    if (filters.department === 'unassigned' || filters.department === 'none') {
+      clauses.push(Prisma.sql`s."department" IS NULL`);
+    } else {
+      clauses.push(Prisma.sql`s."department" = ${filters.department}`);
+    }
+  }
+
   return clauses;
 }
 
@@ -221,8 +237,31 @@ export function generateBuckets(start: Date, end: Date, granularity: TimeGranula
   return buckets;
 }
 
-export async function getAnalyticsDashboard(filters: AnalyticsFilters, now = new Date()): Promise<AnalyticsDashboardData> {
-  const totalDatabaseRecords = await prisma.sacRecord.count();
+export async function getAnalyticsDashboard(
+  filters: AnalyticsFilters,
+  userRoleOrNow?: string | Date,
+  userDepartment?: string | null,
+  nowArg = new Date(),
+): Promise<AnalyticsDashboardData> {
+  let userRole: string | undefined;
+  let now: Date;
+  if (userRoleOrNow instanceof Date) {
+    userRole = 'ADMIN';
+    now = userRoleOrNow;
+  } else {
+    userRole = userRoleOrNow;
+    now = nowArg;
+  }
+  const totalDatabaseRecords = await prisma.sacRecord.count({
+    where: {
+      archivedAt: null,
+      ...(userRole !== 'ADMIN'
+        ? (userDepartment ? { department: userDepartment } : { id: '__NONE__' })
+        : (filters.department
+            ? (filters.department === 'unassigned' || filters.department === 'none' ? { department: null } : { department: filters.department })
+            : {})),
+    },
+  });
   if (totalDatabaseRecords === 0) {
     const interval = resolvePeriodInterval(filters, now);
     return {
@@ -261,7 +300,7 @@ export async function getAnalyticsDashboard(filters: AnalyticsFilters, now = new
   }
 
   const { currentStart, currentEnd, previousStart, previousEnd, granularity } = resolvePeriodInterval(filters, now);
-  const baseClauses = buildBaseWhere(filters);
+  const baseClauses = buildBaseWhere(filters, userRole, userDepartment);
   const boundaries = operationalBoundaries(now);
 
   // 1. Movements in Current vs Previous Period
@@ -509,11 +548,11 @@ export async function getAnalyticsDashboard(filters: AnalyticsFilters, now = new
     b_gt30: bigint;
   }>>(Prisma.sql`
     SELECT
-      COUNT(*) FILTER (WHERE s."status"::text IN ('PENDING', 'IN_PROGRESS') AND s."openedAt" >= ${new Date(now.getTime() - 3 * DAY_MS)}) AS b0_3,
-      COUNT(*) FILTER (WHERE s."status"::text IN ('PENDING', 'IN_PROGRESS') AND s."openedAt" < ${new Date(now.getTime() - 3 * DAY_MS)} AND s."openedAt" >= ${new Date(now.getTime() - 7 * DAY_MS)}) AS b4_7,
-      COUNT(*) FILTER (WHERE s."status"::text IN ('PENDING', 'IN_PROGRESS') AND s."openedAt" < ${new Date(now.getTime() - 7 * DAY_MS)} AND s."openedAt" >= ${new Date(now.getTime() - 15 * DAY_MS)}) AS b8_15,
-      COUNT(*) FILTER (WHERE s."status"::text IN ('PENDING', 'IN_PROGRESS') AND s."openedAt" < ${new Date(now.getTime() - 15 * DAY_MS)} AND s."openedAt" >= ${new Date(now.getTime() - 30 * DAY_MS)}) AS b16_30,
-      COUNT(*) FILTER (WHERE s."status"::text IN ('PENDING', 'IN_PROGRESS') AND s."openedAt" < ${new Date(now.getTime() - 30 * DAY_MS)}) AS b_gt30
+      COUNT(*) FILTER (WHERE s."status"::text IN ('PENDING', 'IN_PROGRESS') AND s."createdAt" >= ${new Date(now.getTime() - 3 * DAY_MS)}) AS b0_3,
+      COUNT(*) FILTER (WHERE s."status"::text IN ('PENDING', 'IN_PROGRESS') AND s."createdAt" < ${new Date(now.getTime() - 3 * DAY_MS)} AND s."createdAt" >= ${new Date(now.getTime() - 7 * DAY_MS)}) AS b4_7,
+      COUNT(*) FILTER (WHERE s."status"::text IN ('PENDING', 'IN_PROGRESS') AND s."createdAt" < ${new Date(now.getTime() - 7 * DAY_MS)} AND s."createdAt" >= ${new Date(now.getTime() - 15 * DAY_MS)}) AS b8_15,
+      COUNT(*) FILTER (WHERE s."status"::text IN ('PENDING', 'IN_PROGRESS') AND s."createdAt" < ${new Date(now.getTime() - 15 * DAY_MS)} AND s."createdAt" >= ${new Date(now.getTime() - 30 * DAY_MS)}) AS b16_30,
+      COUNT(*) FILTER (WHERE s."status"::text IN ('PENDING', 'IN_PROGRESS') AND s."createdAt" < ${new Date(now.getTime() - 30 * DAY_MS)}) AS b_gt30
     FROM "SacRecord" s
     WHERE ${snapshotWhereAnd}
   `);
@@ -632,8 +671,8 @@ export async function getAnalyticsDashboard(filters: AnalyticsFilters, now = new
 export function sanitizeCsvField(value: unknown): string {
   if (value === null || value === undefined) return '""';
   let str = String(value);
-  // CSV Injection prevention: prefix dangerous starting characters with single quote
-  if (/^[=+\-@\t\r]/.test(str)) {
+  // CSV Injection prevention: prefix dangerous starting characters with single quote (including after leading whitespace)
+  if (/^\s*[=+\-@\t\r]/.test(str)) {
     str = `'${str}`;
   }
   // Escape quotes
@@ -646,7 +685,21 @@ export function formatDateBr(date: Date | null): string {
   return date.toLocaleString('pt-BR', { timeZone: ANALYTICS_TIME_ZONE });
 }
 
-export async function* streamAnalyticsCsv(filters: AnalyticsFilters, now = new Date()) {
+export async function* streamAnalyticsCsv(
+  filters: AnalyticsFilters,
+  userRoleOrNow?: string | Date,
+  userDepartment?: string | null,
+  nowArg = new Date(),
+) {
+  let userRole: string | undefined;
+  let now: Date;
+  if (userRoleOrNow instanceof Date) {
+    userRole = 'ADMIN';
+    now = userRoleOrNow;
+  } else {
+    userRole = userRoleOrNow;
+    now = nowArg;
+  }
   // UTF-8 BOM for Excel compatibility
   yield '\uFEFF';
 
@@ -663,6 +716,7 @@ export async function* streamAnalyticsCsv(filters: AnalyticsFilters, now = new D
     'Prioridade',
     'Status',
     'Responsável',
+    'Setor',
     'Prazo',
     'Data de Conclusão',
     'Cumprimento do Prazo',
@@ -675,7 +729,7 @@ export async function* streamAnalyticsCsv(filters: AnalyticsFilters, now = new D
   yield headers.map(sanitizeCsvField).join(';') + '\r\n';
 
   const { currentStart, currentEnd } = resolvePeriodInterval(filters, now);
-  const whereClauses = buildBaseWhere(filters);
+  const whereClauses = buildBaseWhere(filters, userRole, userDepartment);
   whereClauses.push(Prisma.sql`s."openedAt" >= ${currentStart} AND s."openedAt" < ${currentEnd}`);
   const whereAnd = Prisma.join(whereClauses, ' AND ');
 
@@ -700,6 +754,7 @@ export async function* streamAnalyticsCsv(filters: AnalyticsFilters, now = new D
     priority: string;
     status: string;
     assigneeName: string | null;
+    department: string | null;
     dueAt: Date;
     completedAt: Date | null;
     identifiedCause: string | null;
@@ -725,6 +780,7 @@ export async function* streamAnalyticsCsv(filters: AnalyticsFilters, now = new D
         s."priority"::text AS "priority",
         s."status"::text AS "status",
         u."name" AS "assigneeName",
+        s."department",
         s."dueAt",
         s."completedAt",
         s."identifiedCause",
@@ -747,11 +803,42 @@ export async function* streamAnalyticsCsv(filters: AnalyticsFilters, now = new D
       break;
     }
 
+    const legacyClosedInBatch = batch
+      .filter(r => (r.status === 'COMPLETED' || r.status === 'CANCELLED') && !r.completedAt)
+      .map(r => r.id);
+
+    let legacyActivitiesMap: Record<string, Array<{ eventType: string; createdAt: Date }>> = {};
+    if (legacyClosedInBatch.length > 0) {
+      const logs = await prisma.activityLog.findMany({
+        where: {
+          recordId: { in: legacyClosedInBatch },
+          eventType: { in: ['COMPLETED', 'CANCELLED', 'REOPENED', 'REACTIVATED'] },
+        },
+        select: { recordId: true, eventType: true, createdAt: true },
+        orderBy: { createdAt: 'asc' },
+      });
+      for (const log of logs) {
+        if (!legacyActivitiesMap[log.recordId]) legacyActivitiesMap[log.recordId] = [];
+        legacyActivitiesMap[log.recordId].push(log);
+      }
+    }
+
     for (let i = 0; i < batch.length; i++) {
       const record: ExportRecordRow = batch[i];
+      const activities = legacyActivitiesMap[record.id];
+      const effectiveClosedDate = resolveClosedDate({
+        status: record.status,
+        completedAt: record.completedAt,
+        activities,
+      });
+
       let slaCompliance = 'Em aberto';
-      if (record.status === 'COMPLETED' && record.completedAt) {
-        slaCompliance = record.completedAt <= record.dueAt ? 'No prazo' : 'Fora do prazo';
+      if (record.status === 'COMPLETED') {
+        if (effectiveClosedDate) {
+          slaCompliance = effectiveClosedDate <= record.dueAt ? 'No prazo' : 'Fora do prazo';
+        } else {
+          slaCompliance = 'Duração indisponível';
+        }
       } else if (record.status === 'CANCELLED') {
         slaCompliance = 'Cancelado';
       } else if (record.dueAt < now) {
@@ -762,7 +849,7 @@ export async function* streamAnalyticsCsv(filters: AnalyticsFilters, now = new D
         record.ticket,
         formatDateBr(record.openedAt),
         record.customerName,
-        record.customerDoc ?? '-',
+        record.customerDoc ? maskCpfCnpj(record.customerDoc) : '-',
         record.orderNumber,
         record.externalTicket ?? '-',
         record.reasonName,
@@ -771,8 +858,9 @@ export async function* streamAnalyticsCsv(filters: AnalyticsFilters, now = new D
         priorityMap[record.priority] ?? record.priority,
         statusMap[record.status] ?? record.status,
         record.assigneeName ?? 'Sem responsável',
+        record.department ?? 'Não classificado',
         formatDateBr(record.dueAt),
-        formatDateBr(record.completedAt),
+        formatDateBr(effectiveClosedDate),
         slaCompliance,
         record.identifiedCause ?? '-',
         record.responsibleArea ?? '-',

@@ -30,7 +30,29 @@ export function NotificationCenter({ open, onOpenChange, triggerRef, anchorRef, 
     catch { setError('Não foi possível carregar as notificações.'); }
     finally { setLoading(false); }
   }, [filter]);
-  useEffect(() => { void fetchCount(); const focus = () => void fetchCount(); const visible = () => { if (document.visibilityState === 'visible') void fetchCount(); }; window.addEventListener('focus', focus); document.addEventListener('visibilitychange', visible); const timer = window.setInterval(fetchCount, 60_000); return () => { window.removeEventListener('focus', focus); document.removeEventListener('visibilitychange', visible); window.clearInterval(timer); }; }, [fetchCount, refreshKey]);
+  useEffect(() => {
+    void fetchCount();
+    let lastFetch = Date.now();
+    const throttledFetch = () => {
+      const now = Date.now();
+      if (now - lastFetch < 10_000) return;
+      lastFetch = now;
+      void fetchCount();
+    };
+    const onTabActive = () => {
+      if (document.visibilityState === 'visible') {
+        throttledFetch();
+      }
+    };
+    window.addEventListener('focus', onTabActive);
+    document.addEventListener('visibilitychange', onTabActive);
+    const timer = window.setInterval(throttledFetch, 60_000);
+    return () => {
+      window.removeEventListener('focus', onTabActive);
+      document.removeEventListener('visibilitychange', onTabActive);
+      window.clearInterval(timer);
+    };
+  }, [fetchCount, refreshKey]);
   useEffect(() => { if (open) { setItems([]); setPage(1); void load(1, true); requestAnimationFrame(() => panelRef.current?.querySelector<HTMLButtonElement>('.notification-close')?.focus()); } }, [open, filter, load]);
   useEffect(() => {
     if (!open) return; const key = (event: KeyboardEvent) => {

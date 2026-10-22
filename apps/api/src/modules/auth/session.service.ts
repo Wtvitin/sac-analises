@@ -10,6 +10,7 @@ const sessionUserSelect = {
   name: true,
   email: true,
   role: true,
+  department: true,
   active: true,
   approvedAt: true,
   rejectedAt: true,
@@ -23,12 +24,13 @@ const sessionUserSelect = {
 function newRefreshToken() { return randomBytes(48).toString('base64url'); }
 function refreshHash(token: string) { return createHmac('sha256', process.env.JWT_SECRET ?? '').update(token).digest('hex'); }
 function expiryDate() { const date = new Date(); date.setUTCDate(date.getUTCDate() + getSecurityConfig().refreshTokenDays); return date; }
-function publicUser(user: { id: string; name: string; email: string; role: 'ADMIN' | 'ANALYST' | 'VIEWER'; active: boolean; approvedAt: Date | null; timezone: string; lastLoginAt: Date | null; mustChangePassword?: boolean }) {
+function publicUser(user: { id: string; name: string; email: string; role: 'ADMIN' | 'ANALYST' | 'VIEWER'; department?: string | null; active: boolean; approvedAt: Date | null; timezone: string; lastLoginAt: Date | null; mustChangePassword?: boolean }) {
   return {
     id: user.id,
     name: user.name,
     email: user.email,
     role: user.role,
+    department: user.department ?? null,
     active: user.active,
     approvedAt: user.approvedAt,
     timezone: user.timezone,

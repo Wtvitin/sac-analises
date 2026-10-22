@@ -10,6 +10,7 @@ export const registerSchema = z.object({
   email: z.string().max(254).pipe(z.email()).transform(normalizeEmail),
   password: strongPassword,
   confirmPassword: z.string().max(128),
+  department: z.string().trim().max(100).optional().nullable(),
 }).refine(input => input.password === input.confirmPassword, { path: ['confirmPassword'], message: 'As senhas não coincidem.' });
 
 export const profileNameSchema = z.object({ name: z.string().max(120).transform(sanitizeName).pipe(z.string().min(3).max(120)) });

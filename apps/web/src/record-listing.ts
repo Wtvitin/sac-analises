@@ -1,14 +1,40 @@
 import type { RecordItem, Status } from './data';
 
 export type AttentionFilter = 'Todos' | 'Requer atenção' | 'Atrasados' | 'Vencem hoje' | 'Próximos do prazo' | 'Sem atualização' | 'Sem responsável' | 'Sem prazo';
-export type SortKey = 'default' | 'attention' | 'ticket' | 'customer' | 'priority' | 'status' | 'due' | 'openedAt' | 'updated';
+export type SortKey = 'default' | 'attention' | 'ticket' | 'customer' | 'priority' | 'status' | 'due' | 'openedAt' | 'createdAt' | 'updated';
 export type SortOrder = 'asc' | 'desc';
+
+export const OPERATIONAL_TIME_ZONE = 'America/Sao_Paulo';
+const DAY_MS = 86_400_000;
+
+const civilFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: OPERATIONAL_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+export function civilDateParts(date: Date) {
+  const values = Object.fromEntries(
+    civilFormatter
+      .formatToParts(date)
+      .filter(part => part.type !== 'literal')
+      .map(part => [part.type, Number(part.value)])
+  );
+  return { year: values.year, month: values.month, day: values.day };
+}
+
+export function civilDayNumber(date: Date) {
+  const { year, month, day } = civilDateParts(date);
+  return Math.floor(Date.UTC(year, month - 1, day) / DAY_MS);
+}
 
 export type RecordFilters = {
   status: 'Todos' | Status;
   priority: 'Todas' | RecordItem['priority'];
   owner: string;
   reason: string;
+  department?: string;
   startDate: string;
   endDate: string;
   attention: AttentionFilter;
@@ -19,6 +45,7 @@ export const EMPTY_RECORD_FILTERS: RecordFilters = {
   priority: 'Todas',
   owner: 'Todos',
   reason: 'Todos',
+  department: 'Todos',
   startDate: '',
   endDate: '',
   attention: 'Todos',
@@ -32,6 +59,7 @@ export function recordListParams(query: string, filters: RecordFilters, sort: So
   if (filters.priority !== 'Todas') params.set('priority', ({ Baixa: 'LOW', Média: 'MEDIUM', Alta: 'HIGH', Crítica: 'CRITICAL' })[filters.priority]);
   if (filters.owner !== 'Todos') params.set('owner', filters.owner);
   if (filters.reason !== 'Todos') params.set('reason', filters.reason);
+  if (filters.department && filters.department !== 'Todos') params.set('department', filters.department);
   if (filters.startDate) params.set('openedFrom', new Date(`${filters.startDate}T00:00:00`).toISOString());
   if (filters.endDate) { const end = new Date(`${filters.endDate}T00:00:00`); end.setDate(end.getDate() + 1); params.set('openedTo', end.toISOString()); }
   const attentionMap: Record<Exclude<AttentionFilter, 'Todos'>, string> = { 'Requer atenção': 'required', Atrasados: 'overdue', 'Vencem hoje': 'dueToday', 'Próximos do prazo': 'nearDue', 'Sem atualização': 'stale', 'Sem responsável': 'unassigned', 'Sem prazo': 'noDue' };
@@ -54,6 +82,16 @@ export function parseBrazilianDate(value: string) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+export function parseDate(value: string | Date | null | undefined): Date | null {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  const iso = new Date(value);
+  if (!Number.isNaN(iso.getTime()) && (value.includes('-') || value.includes('T'))) {
+    return iso;
+  }
+  return parseBrazilianDate(value);
+}
+
 export function isRecordOverdue(record: RecordItem) {
   return record.operational.isOverdue;
 }
@@ -70,7 +108,7 @@ export function getDueLabel(record: RecordItem) {
 
 export function getRelativeUpdate(value: string, now = new Date()) {
   if (value === 'Agora') return { relative: 'Agora', full: 'Agora' };
-  const date = parseBrazilianDate(value);
+  const date = parseDate(value);
   if (!date) return { relative: value, full: value };
   const milliseconds = Math.max(0, now.getTime() - date.getTime());
   const minutes = Math.floor(milliseconds / 60_000);
@@ -81,16 +119,118 @@ export function getRelativeUpdate(value: string, now = new Date()) {
   return { relative, full };
 }
 
-export function getOpenDuration(value: string, now = new Date()) {
-  const date = parseBrazilianDate(value);
-  if (!date) return '—';
-  const hours = Math.max(0, Math.floor((now.getTime() - date.getTime()) / 3_600_000));
-  const days = Math.floor(hours / 24);
-  return days > 0 ? `${days} ${days === 1 ? 'dia' : 'dias'}` : hours > 0 ? `${hours} ${hours === 1 ? 'hora' : 'horas'}` : 'Menos de 1 hora';
+export type OpenDurationInput =
+  | string
+  | Date
+  | {
+      createdAt?: string | Date | null;
+      openedAt?: string | Date | null;
+      status?: string | null;
+      completedAt?: string | Date | null;
+      updatedAt?: string | Date | null;
+      operational?: { openDays?: number | null };
+      activities?: Array<{ eventType: string; createdAt: string | Date; [key: string]: any }>;
+    };
+
+export function resolveClosedDate(input: {
+  status?: string | null;
+  completedAt?: string | Date | null;
+  activities?: Array<{ eventType: string; createdAt: string | Date; [key: string]: any }>;
+}): Date | null {
+  const isClosed =
+    input.status === 'COMPLETED' ||
+    input.status === 'CANCELLED' ||
+    input.status === 'Concluído' ||
+    input.status === 'Cancelado';
+  if (!isClosed) return null;
+
+  // 1. Prioritize a persisted and reliable closing date
+  if (input.completedAt) {
+    const parsed = parseDate(input.completedAt);
+    if (parsed) return parsed;
+  }
+
+  // 2. For legacy cases without completedAt, consult the last valid completion or cancellation event of the current cycle in history
+  if (input.activities && input.activities.length > 0) {
+    const parsedActivities = input.activities
+      .map(a => ({
+        eventType: a.eventType,
+        createdAt: parseDate(a.createdAt),
+      }))
+      .filter((a): a is { eventType: string; createdAt: Date } => a.createdAt !== null)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+
+    let lastReopenIndex = -1;
+    for (let i = parsedActivities.length - 1; i >= 0; i--) {
+      if (parsedActivities[i].eventType === 'REOPENED' || parsedActivities[i].eventType === 'REACTIVATED') {
+        lastReopenIndex = i;
+        break;
+      }
+    }
+
+    const targetEvent =
+      input.status === 'COMPLETED' || input.status === 'Concluído' ? 'COMPLETED' : 'CANCELLED';
+
+    for (let i = parsedActivities.length - 1; i > lastReopenIndex; i--) {
+      if (parsedActivities[i].eventType === targetEvent) {
+        return parsedActivities[i].createdAt;
+      }
+    }
+  }
+
+  // 3. If no reliable evidence exists, return null (never invent a date, never use updatedAt)
+  return null;
+}
+
+export function calculateOpenDays(input: OpenDurationInput, now = new Date()): number | null {
+  if (typeof input === 'object' && input !== null && !(input instanceof Date)) {
+    if (input.operational && 'openDays' in input.operational) {
+      if (typeof input.operational.openDays === 'number') {
+        return input.operational.openDays;
+      }
+      if (input.operational.openDays === null) {
+        return null;
+      }
+    }
+    const startDate = parseDate(input.createdAt ?? input.openedAt);
+    if (!startDate) return null;
+
+    const isClosed =
+      input.status === 'COMPLETED' ||
+      input.status === 'CANCELLED' ||
+      input.status === 'Concluído' ||
+      input.status === 'Cancelado';
+
+    if (!isClosed) {
+      return Math.max(0, civilDayNumber(now) - civilDayNumber(startDate));
+    }
+
+    const closedDate = resolveClosedDate(input);
+    if (!closedDate) return null;
+    return Math.max(0, civilDayNumber(closedDate) - civilDayNumber(startDate));
+  }
+
+  const startDate = parseDate(input);
+  if (!startDate) return null;
+  return Math.max(0, civilDayNumber(now) - civilDayNumber(startDate));
+}
+
+export function getOpenDuration(input: OpenDurationInput, now = new Date()): string {
+  const startDate =
+    typeof input === 'object' && input !== null && !(input instanceof Date)
+      ? parseDate(input.createdAt ?? input.openedAt)
+      : parseDate(input);
+  if (!startDate) return '—';
+
+  const days = calculateOpenDays(input, now);
+  if (days === null) return 'Duração indisponível';
+  if (days === 0) return 'Hoje';
+  if (days === 1) return '1 dia';
+  return `${days} dias`;
 }
 
 export function hasActiveFilters(filters: RecordFilters) {
-  return filters.status !== 'Todos' || filters.priority !== 'Todas' || filters.owner !== 'Todos' || filters.reason !== 'Todos' || Boolean(filters.startDate || filters.endDate) || filters.attention !== 'Todos';
+  return filters.status !== 'Todos' || filters.priority !== 'Todas' || filters.owner !== 'Todos' || filters.reason !== 'Todos' || Boolean(filters.startDate || filters.endDate) || filters.attention !== 'Todos' || (Boolean(filters.department) && filters.department !== 'Todos');
 }
 
 export function filterRecords(records: RecordItem[], query: string, filters: RecordFilters) {
@@ -99,12 +239,13 @@ export function filterRecords(records: RecordItem[], query: string, filters: Rec
   const end = filters.endDate ? new Date(`${filters.endDate}T23:59:59`) : null;
   return records.filter(record => {
     const searchable = normalizeSearch(`${record.ticket} ${record.order} ${record.customer} ${record.occurrence}`);
-    const openedAt = parseBrazilianDate(record.openedAt);
+    const openedAt = parseDate(record.openedAt);
     return (!normalizedQuery || searchable.includes(normalizedQuery))
       && (filters.status === 'Todos' || record.status === filters.status)
       && (filters.priority === 'Todas' || record.priority === filters.priority)
       && (filters.owner === 'Todos' || record.owner === filters.owner)
       && (filters.reason === 'Todos' || record.occurrence === filters.reason)
+      && (!filters.department || filters.department === 'Todos' || (filters.department === 'unassigned' || filters.department === 'Sem setor definido' ? !record.department : record.department === filters.department))
       && (!start || !openedAt || openedAt >= start)
       && (!end || !openedAt || openedAt <= end)
       && (filters.attention === 'Todos'
@@ -130,9 +271,11 @@ export function sortRecords(records: RecordItem[], key: SortKey, order: SortOrde
       if (overdue) return overdue;
       const priority = priorityRank[right.priority] - priorityRank[left.priority];
       if (priority) return priority;
-      const due = (parseBrazilianDate(left.due)?.getTime() ?? Number.MAX_SAFE_INTEGER) - (parseBrazilianDate(right.due)?.getTime() ?? Number.MAX_SAFE_INTEGER);
+      const due = (parseDate(left.due)?.getTime() ?? Number.MAX_SAFE_INTEGER) - (parseDate(right.due)?.getTime() ?? Number.MAX_SAFE_INTEGER);
       if (due) return due;
-      return (parseBrazilianDate(left.openedAt)?.getTime() ?? 0) - (parseBrazilianDate(right.openedAt)?.getTime() ?? 0);
+      const leftCreated = parseDate(left.createdAt ?? left.openedAt)?.getTime() ?? 0;
+      const rightCreated = parseDate(right.createdAt ?? right.openedAt)?.getTime() ?? 0;
+      return leftCreated - rightCreated;
     }
     if (key === 'attention') return 0;
     const comparisons: Record<Exclude<SortKey, 'default' | 'attention'>, number> = {
@@ -140,9 +283,10 @@ export function sortRecords(records: RecordItem[], key: SortKey, order: SortOrde
       customer: compareText(left.customer, right.customer),
       priority: priorityRank[left.priority] - priorityRank[right.priority],
       status: statusRank[left.status] - statusRank[right.status],
-      due: (parseBrazilianDate(left.due)?.getTime() ?? 0) - (parseBrazilianDate(right.due)?.getTime() ?? 0),
-      openedAt: (parseBrazilianDate(left.openedAt)?.getTime() ?? 0) - (parseBrazilianDate(right.openedAt)?.getTime() ?? 0),
-      updated: (parseBrazilianDate(left.updated)?.getTime() ?? 0) - (parseBrazilianDate(right.updated)?.getTime() ?? 0),
+      due: (parseDate(left.due)?.getTime() ?? 0) - (parseDate(right.due)?.getTime() ?? 0),
+      openedAt: (parseDate(left.openedAt)?.getTime() ?? 0) - (parseDate(right.openedAt)?.getTime() ?? 0),
+      createdAt: (parseDate(left.createdAt ?? left.openedAt)?.getTime() ?? 0) - (parseDate(right.createdAt ?? right.openedAt)?.getTime() ?? 0),
+      updated: (parseDate(left.updated)?.getTime() ?? 0) - (parseDate(right.updated)?.getTime() ?? 0),
     };
     return comparisons[key] * direction;
   });

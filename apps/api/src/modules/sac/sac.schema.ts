@@ -13,9 +13,10 @@ export const listSacRecordsSchema = z.object({
   overdueBefore: z.iso.datetime({ offset: true }).optional(),
   unassigned: z.enum(['true']).optional(),
   attention: z.enum(['required', 'overdue', 'dueToday', 'nearDue', 'stale', 'unassigned', 'noDue']).optional(),
+  department: z.string().trim().max(100).optional(),
   page: z.coerce.number().int().positive().default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
-  sort: z.enum(['ticket', 'customer', 'status', 'openedAt', 'dueAt', 'priority', 'updatedAt', 'attention']).default('updatedAt'),
+  sort: z.enum(['ticket', 'customer', 'status', 'openedAt', 'createdAt', 'dueAt', 'priority', 'updatedAt', 'attention']).default('updatedAt'),
   order: z.enum(['asc', 'desc']).default('desc'),
 }).refine(input => !input.openedFrom || !input.openedTo || new Date(input.openedFrom) < new Date(input.openedTo), { message: 'Período inválido.', path: ['openedTo'] });
 
@@ -35,14 +36,36 @@ export const takeCaseSchema = z.object({ updatedAt: z.coerce.date() });
 export const priorityChangeSchema = z.object({ updatedAt: z.coerce.date(), priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']), justification: z.string().trim().max(1000).optional() });
 export const dueDateChangeSchema = z.object({ updatedAt: z.coerce.date(), dueAt: z.coerce.date(), justification: z.string().trim().max(1000).optional() });
 export const commentSchema = z.object({ updatedAt: z.coerce.date(), body: z.string().trim().min(1, 'Escreva um comentário.').max(4000) });
+export const updateTreatmentSchema = z.object({
+  updatedAt: z.coerce.date(),
+  solutionSummary: z.string().trim().max(5000).optional().nullable(),
+  identifiedCause: z.string().trim().max(2000).optional().nullable(),
+  responsibleArea: z.string().trim().max(160).optional().nullable(),
+  correctiveAction: z.string().trim().max(2000).optional().nullable(),
+});
 export const historyQuerySchema = z.object({ page: z.coerce.number().int().positive().default(1), pageSize: z.coerce.number().int().min(1).max(100).default(30) });
 
 const optionalText = (max: number) => z.string().max(max).optional().transform(value => value?.trim() || null);
 
+const optionalBatch = () =>
+  z
+    .string()
+    .max(80)
+    .optional()
+    .nullable()
+    .transform(value => {
+      if (!value) return null;
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+      // Regra: "Não grave o aviso como valor do lote."
+      if (/^o\s+lote\s+n[ãa]o\s+foi\s+informado/i.test(trimmed)) return null;
+      return trimmed;
+    });
+
 export const sacItemSchema = z.object({
   code: z.string().trim().min(1, 'Informe o código ou SKU.').max(80),
   description: z.string().trim().min(2, 'Informe a descrição do item.').max(300),
-  batch: optionalText(80),
+  batch: optionalBatch(),
   quantity: z.coerce.number().positive('A quantidade deve ser maior que zero.').max(999999999),
   note: optionalText(500),
 });
@@ -88,6 +111,7 @@ function validDates(input: { openedAt: Date; dueAt: Date }) { return input.dueAt
 
 export const createSacRecordSchema = z.object({
   ...sacRecordFields,
+  department: z.string().trim().max(100).optional().transform(value => value || null),
   allowDuplicateExternalTicket: z.boolean().default(false),
   importSessionId: z.string().trim().optional(),
   preserveImportAsAttachment: z.boolean().default(false),
@@ -99,6 +123,12 @@ export const updateSacRecordSchema = z.object({
   allowDuplicateExternalTicket: z.boolean().default(false),
 }).refine(validDates, { path: ['dueAt'], message: 'O prazo não pode ser anterior à data de abertura.' });
 
+export const transferDepartmentSchema = z.object({
+  department: z.string().trim().min(1, 'Informe o novo setor.').max(100),
+  justification: z.string().trim().max(1000).optional(),
+});
+
 export const idempotencyKeySchema = z.string().uuid('Chave de idempotência inválida.');
 export const externalTicketCheckSchema = z.object({ value: z.string().trim().min(1).max(80), excludeId: z.string().trim().optional() });
 export const customerSearchSchema = z.object({ query: z.string().trim().max(120).default('') });
+

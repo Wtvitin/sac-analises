@@ -7,7 +7,22 @@ const DAY_MS = 86_400_000;
 
 export type AttentionReasonCode = 'OVERDUE' | 'DUE_TODAY' | 'NEAR_DUE' | 'HIGH_PRIORITY' | 'UNASSIGNED' | 'STALE' | 'NO_DUE';
 export type DueState = 'WITHIN_DUE' | 'NEAR_DUE' | 'DUE_TODAY' | 'OVERDUE' | 'NO_DUE' | 'CLOSED';
-type OperationalRecord = { status: SacStatus; priority: Priority; dueAt: Date | null; assigneeId: string | null; lastOperationalActivityAt?: Date; updatedAt?: Date };
+
+export type OperationalRecord = {
+  status: SacStatus;
+  priority: Priority;
+  dueAt: Date | null;
+  assigneeId: string | null;
+  lastOperationalActivityAt?: Date;
+  updatedAt?: Date;
+  createdAt?: Date;
+  completedAt?: Date | null;
+  activities?: Array<{
+    eventType: string;
+    createdAt: Date | string;
+    [key: string]: any;
+  }>;
+};
 
 const civilFormatter = new Intl.DateTimeFormat('en-CA', {
   timeZone: OPERATIONAL_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit',
@@ -37,6 +52,58 @@ export function operationalBoundaries(now = new Date()) {
   };
 }
 
+export function resolveClosedDate(record: {
+  status: SacStatus | string;
+  completedAt?: Date | string | null;
+  activities?: Array<{ eventType: string; createdAt: Date | string; [key: string]: any }>;
+}): Date | null {
+  const isClosed =
+    record.status === 'COMPLETED' ||
+    record.status === 'CANCELLED' ||
+    record.status === 'Concluído' ||
+    record.status === 'Cancelado';
+  if (!isClosed) return null;
+
+  // 1. Prioritize a persisted and reliable closing date
+  if (record.completedAt) {
+    const parsed = record.completedAt instanceof Date ? record.completedAt : new Date(record.completedAt);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+
+  // 2. For legacy cases without completedAt, consult the last valid completion or cancellation event of the current cycle in history
+  if (record.activities && record.activities.length > 0) {
+    const parsedActivities = record.activities
+      .map(a => ({
+        eventType: a.eventType,
+        createdAt: a.createdAt instanceof Date ? a.createdAt : new Date(a.createdAt),
+      }))
+      .filter(a => !Number.isNaN(a.createdAt.getTime()))
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+
+    let lastReopenIndex = -1;
+    for (let i = parsedActivities.length - 1; i >= 0; i--) {
+      if (parsedActivities[i].eventType === 'REOPENED' || parsedActivities[i].eventType === 'REACTIVATED') {
+        lastReopenIndex = i;
+        break;
+      }
+    }
+
+    const targetEvent =
+      record.status === 'COMPLETED' || record.status === 'Concluído' ? 'COMPLETED' : 'CANCELLED';
+
+    for (let i = parsedActivities.length - 1; i > lastReopenIndex; i--) {
+      if (parsedActivities[i].eventType === targetEvent) {
+        return parsedActivities[i].createdAt;
+      }
+    }
+  }
+
+  // 3. If no reliable evidence exists, return null (never invent a date, never use updatedAt)
+  return null;
+}
+
 export function classifyOperationalAttention(record: OperationalRecord, now = new Date()) {
   const open = record.status === 'PENDING' || record.status === 'IN_PROGRESS';
   const dueDifference = record.dueAt ? civilDayNumber(record.dueAt) - civilDayNumber(now) : null;
@@ -57,7 +124,24 @@ export function classifyOperationalAttention(record: OperationalRecord, now = ne
   if (isStale) attentionReasons.push('STALE');
   if (open && !record.dueAt) attentionReasons.push('NO_DUE');
   const dueState: DueState = !open ? 'CLOSED' : !record.dueAt ? 'NO_DUE' : isOverdue ? 'OVERDUE' : isDueToday ? 'DUE_TODAY' : isNearDue ? 'NEAR_DUE' : 'WITHIN_DUE';
-  return { isOverdue, isDueToday, isNearDue, isStale, isUnassigned, attentionReasons, dueState, overdueDays: isOverdue ? -dueDifference! : 0, staleDays, lastOperationalActivityAt };
+
+  // Calculate openDays based on system registration time (createdAt) and closure/current time
+  const startDate = record.createdAt;
+  let openDays: number | null = null;
+  if (startDate) {
+    if (open) {
+      openDays = Math.max(0, civilDayNumber(now) - civilDayNumber(startDate));
+    } else {
+      const closedDate = resolveClosedDate(record);
+      if (closedDate) {
+        openDays = Math.max(0, civilDayNumber(closedDate) - civilDayNumber(startDate));
+      } else {
+        openDays = null;
+      }
+    }
+  }
+
+  return { isOverdue, isDueToday, isNearDue, isStale, isUnassigned, attentionReasons, dueState, overdueDays: isOverdue ? -dueDifference! : 0, staleDays, openDays, lastOperationalActivityAt };
 }
 
 export function compareAttention(left: OperationalRecord & { openedAt: Date }, right: OperationalRecord & { openedAt: Date }, now = new Date()) {

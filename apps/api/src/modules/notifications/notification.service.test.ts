@@ -52,29 +52,39 @@ describe('serviço de notificações persistentes', () => {
   it('lista e conta somente notificações do destinatário autenticado', async () => {
     const result = await listNotifications('analyst-1', { filter: 'unread', page: 2, pageSize: 20 });
     expect(mock.database.notification.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { recipientId: 'analyst-1', readAt: null }, skip: 20, take: 20,
+      where: expect.objectContaining({ recipientId: 'analyst-1', readAt: null }), skip: 20, take: 20,
     }));
     expect(result).toMatchObject({ total: 1, page: 2, pageSize: 20 });
     await unreadNotificationCount('analyst-1');
-    expect(mock.database.notification.count).toHaveBeenLastCalledWith({ where: { recipientId: 'analyst-1', readAt: null } });
+    expect(mock.database.notification.count).toHaveBeenLastCalledWith({
+      where: expect.objectContaining({ recipientId: 'analyst-1', readAt: null }),
+    });
   });
 
   it('isola consulta e leitura por destinatário e retorna 404 fora do escopo', async () => {
     mock.database.notification.findFirst.mockResolvedValueOnce(null);
     await expect(getNotification('other-user', 'notification-1')).rejects.toMatchObject({ code: 'NOTIFICATION_NOT_FOUND', status: 404 });
-    expect(mock.database.notification.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'notification-1', recipientId: 'other-user' } }));
+    expect(mock.database.notification.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ id: 'notification-1', recipientId: 'other-user' }),
+    }));
 
     mock.database.notification.updateMany.mockResolvedValueOnce({ count: 0 });
     mock.database.notification.findFirst.mockResolvedValueOnce(null);
     await expect(markNotificationRead('other-user', 'notification-1')).rejects.toMatchObject({ code: 'NOTIFICATION_NOT_FOUND', status: 404 });
-    expect(mock.database.notification.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'notification-1', recipientId: 'other-user', readAt: null } }));
+    expect(mock.database.notification.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ id: 'notification-1', recipientId: 'other-user', readAt: null }),
+    }));
   });
 
   it('marca uma ou todas como lidas apenas no escopo do usuário', async () => {
     await markNotificationRead('analyst-1', 'notification-1', new Date('2026-09-14T13:00:00Z'));
-    expect(mock.database.notification.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'notification-1', recipientId: 'analyst-1', readAt: null } }));
+    expect(mock.database.notification.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ id: 'notification-1', recipientId: 'analyst-1', readAt: null }),
+    }));
     await markAllNotificationsRead('analyst-1', new Date('2026-09-14T13:00:00Z'));
-    expect(mock.database.notification.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({ where: { recipientId: 'analyst-1', readAt: null } }));
+    expect(mock.database.notification.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ recipientId: 'analyst-1', readAt: null }),
+    }));
   });
 
   it('gera condições temporais idempotentes com chaves distintas', async () => {

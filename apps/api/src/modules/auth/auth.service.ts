@@ -14,6 +14,7 @@ const publicUserSelect = {
   name: true,
   email: true,
   role: true,
+  department: true,
   active: true,
   approvedAt: true,
   timezone: true,
@@ -35,10 +36,11 @@ export async function requestAccess(raw: unknown) {
           role: 'VIEWER',
           active: false,
           mustChangePassword: true,
+          department: input.department ?? null,
         },
         select: { id: true },
       });
-      await tx.adminAudit.create({ data: { type: 'ACCESS_REQUESTED', targetUserId: user.id, metadata: { source: 'public-request' } } });
+      await tx.adminAudit.create({ data: { type: 'ACCESS_REQUESTED', targetUserId: user.id, metadata: { source: 'public-request', department: input.department ?? null } } });
       const administrators = await tx.user.findMany({ where: { role: 'ADMIN', active: true, approvedAt: { not: null }, rejectedAt: null }, select: { id: true } });
       if (administrators.length) await tx.notification.createMany({ data: administrators.map(admin => ({ recipientId: admin.id, type: 'ACCESS_REQUEST' as const, title: 'Solicitação de acesso pendente', summary: 'Existe uma nova solicitação aguardando análise.', metadata: { requestUserId: user.id }, dedupeKey: `access-request:${user.id}` })), skipDuplicates: true });
       return { accepted: true, created: true };
@@ -73,6 +75,7 @@ export async function authenticate(raw: unknown) {
       name: user.name,
       email: user.email,
       role: user.role,
+      department: user.department ?? null,
       active: user.active,
       approvedAt: user.approvedAt,
       timezone: user.timezone,

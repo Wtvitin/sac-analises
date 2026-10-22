@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Filter, LoaderCircle, MoreHorizontal, Pencil, Plus, Search, ShieldCheck, Trash2, UserCheck, Users, X } from 'lucide-react';
-import { apiRequest } from './api';
+import { AlertTriangle, Building2, CheckCircle2, ChevronLeft, ChevronRight, Filter, LoaderCircle, MoreHorizontal, Pencil, Plus, Search, ShieldCheck, Trash2, UserCheck, Users, X } from 'lucide-react';
+import { apiRequest, DEFAULT_USER_DEPARTMENTS } from './api';
 
 type Role = 'ADMIN' | 'ANALYST' | 'VIEWER';
-type TeamUser = { id: string; name: string; email: string; role: Role; active: boolean; approvedAt: string | null; rejectedAt: string | null; lastLoginAt: string | null; createdAt: string; openAssignedCases: number; mustChangePassword?: boolean };
+type TeamUser = { id: string; name: string; email: string; role: Role; department?: string | null; active: boolean; approvedAt: string | null; rejectedAt: string | null; lastLoginAt: string | null; createdAt: string; openAssignedCases: number; mustChangePassword?: boolean };
 type TeamPageData = { items: TeamUser[]; total: number; page: number; pageSize: number };
 type Summary = { activeUsers: number; pendingApproval: number; analysts: number; unassignedCases: number };
-export type EditAction = 'approve' | 'reject' | 'role' | 'resend-provisional';
+export type EditAction = 'approve' | 'reject' | 'role' | 'department' | 'resend-provisional';
 type Option = { id: string; name: string };
 type Audit = { id: string; type: string; justification: string | null; createdAt: string; actor: { name: string } | null };
 type Filters = { query: string; role: string; state: string; approval: string; sort: string; order: string };
@@ -18,6 +18,7 @@ const auditLabel: Record<string, string> = {
   ACCESS_APPROVED: 'Acesso aprovado',
   ACCESS_REJECTED: 'Solicitação recusada',
   ROLE_CHANGED: 'Perfil alterado',
+  USER_DEPARTMENT_UPDATED: 'Setor de atuação alterado',
   USER_DELETED: 'Usuário excluído',
   USER_DEACTIVATED: 'Usuário inativado',
   USER_REACTIVATED: 'Usuário reativado',
@@ -46,6 +47,7 @@ export function getAvailableEditActions(user: { approvedAt: string | null; rejec
     actions.push({ value: 'resend-provisional', label: 'Reenviar senha provisória' });
   }
   if (user.approvedAt) {
+    actions.push({ value: 'department', label: 'Alterar setor de atuação' });
     actions.push({ value: 'role', label: 'Alterar perfil' });
   }
   return actions;
@@ -374,6 +376,7 @@ export function TeamManagementPage({
               <thead>
                 <tr>
                   <th>Usuário</th>
+                  <th>Setor</th>
                   <th>Perfil</th>
                   <th>Estado</th>
                   <th>Casos abertos</th>
@@ -398,6 +401,7 @@ export function TeamManagementPage({
                           </span>
                         </span>
                       </td>
+                      <td>{user.department || <span style={{ color: '#94a3b8' }}>—</span>}</td>
                       <td>{roleLabel[user.role]}</td>
                       <td>
                         <span className={`account-state state-${state.key}`}>{state.label}</span>
@@ -460,7 +464,7 @@ export function TeamManagementPage({
                     <span>{roleLabel[user.role]}</span>
                     <span className={`account-state state-${state.key}`}>{state.label}</span>
                   </div>
-                  <small>{user.openAssignedCases} casos abertos · Último acesso: {formatDate(user.lastLoginAt)}</small>
+                  <small>{user.department ? `Setor: ${user.department}` : 'Setor não informado'} · {user.openAssignedCases} casos abertos · Último acesso: {formatDate(user.lastLoginAt)}</small>
                 </article>
               );
             })}
@@ -514,9 +518,18 @@ function AddUserModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<'ANALYST' | 'VIEWER'>('ANALYST');
+  const [departments, setDepartments] = useState<string[]>([...DEFAULT_USER_DEPARTMENTS]);
+  const [department, setDepartment] = useState('');
+  const [customDepartment, setCustomDepartment] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const modalRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    apiRequest<string[]>('/users/departments')
+      .then(list => { if (Array.isArray(list) && list.length) setDepartments(list); })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -532,11 +545,17 @@ function AddUserModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
     setSaving(true);
     setError('');
     try {
+      const effectiveDepartment = department === '__other__' ? customDepartment.trim() : department.trim();
       const res = await apiRequest<{ emailDelivery?: { delivered: boolean; statusMessage: string } }>(
         '/users',
         {
           method: 'POST',
-          body: JSON.stringify({ name: name.trim(), email: email.trim(), role }),
+          body: JSON.stringify({
+            name: name.trim(),
+            email: email.trim(),
+            role,
+            department: effectiveDepartment || undefined,
+          }),
         }
       );
       if (res?.emailDelivery && !res.emailDelivery.delivered) {
@@ -599,6 +618,27 @@ function AddUserModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
                 <option value="VIEWER">Consulta</option>
               </select>
             </label>
+            <label>
+              Setor de atuação
+              <select value={department} onChange={e => setDepartment(e.target.value)}>
+                <option value="">Selecione um setor (opcional)</option>
+                {departments.map(dept => (
+                  <option key={dept} value={dept}>{dept}</option>
+                ))}
+                <option value="__other__">Outro (especificar)</option>
+              </select>
+            </label>
+            {department === '__other__' && (
+              <label>
+                Especifique o setor
+                <input
+                  maxLength={120}
+                  value={customDepartment}
+                  onChange={e => setCustomDepartment(e.target.value)}
+                  placeholder="Ex.: Manutenção, TI, Fiscal..."
+                />
+              </label>
+            )}
             <p style={{ fontSize: '12px', color: 'var(--color-text-secondary)', margin: '4px 0 0', lineHeight: 1.45 }}>
               O usuário é cadastrado como inativo e uma senha provisória aleatória é enviada por e-mail. A conta só será ativada após o servidor de e-mail aceitar o envio.
             </p>
@@ -632,12 +672,22 @@ export function EditUserModal({
   const defaultAction: EditAction = availableActions[0]?.value ?? (!user.approvedAt && !user.rejectedAt ? 'approve' : 'role');
   const [action, setAction] = useState<EditAction>(defaultAction);
   const [role, setRole] = useState<Role>(user.role === 'ADMIN' ? 'ANALYST' : user.role);
+  const [departments, setDepartments] = useState<string[]>([...DEFAULT_USER_DEPARTMENTS]);
+  const isDefaultDept = !user.department || (DEFAULT_USER_DEPARTMENTS as readonly string[]).includes(user.department);
+  const [department, setDepartment] = useState(isDefaultDept ? (user.department ?? '') : '__other__');
+  const [customDepartment, setCustomDepartment] = useState(isDefaultDept ? '' : (user.department ?? ''));
   const [reason, setReason] = useState('');
   const [confirmed, setConfirmed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [audits, setAudits] = useState<Audit[]>([]);
   const modalRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    apiRequest<string[]>('/users/departments')
+      .then(list => { if (Array.isArray(list) && list.length) setDepartments(list); })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     apiRequest<Audit[]>(`/users/${user.id}/audits`).then(setAudits).catch(() => undefined);
@@ -675,9 +725,11 @@ export function EditUserModal({
       let method = 'POST';
       let body: Record<string, unknown> = {};
 
+      const effectiveDept = department === '__other__' ? customDepartment.trim() : department.trim();
+
       if (action === 'approve') {
         path = `/users/${user.id}/approve`;
-        body = { role };
+        body = { role, department: effectiveDept || undefined };
       } else if (action === 'resend-provisional') {
         path = `/users/${user.id}/resend-provisional`;
       } else if (action === 'reject') {
@@ -687,6 +739,10 @@ export function EditUserModal({
         path = `/users/${user.id}/role`;
         method = 'PATCH';
         body = { role, justification: needsReason ? reason : undefined };
+      } else if (action === 'department') {
+        path = `/users/${user.id}/department`;
+        method = 'PATCH';
+        body = { department: effectiveDept || null };
       }
 
       const res = await apiRequest<{ emailDelivery?: { delivered: boolean; statusMessage: string } }>(
@@ -708,6 +764,8 @@ export function EditUserModal({
             ? 'Envio aceito pelo servidor de e-mail.'
             : action === 'reject'
             ? 'Solicitação recusada.'
+            : action === 'department'
+            ? 'Setor de atuação atualizado.'
             : 'Perfil atualizado.'
         );
       }
@@ -745,6 +803,7 @@ export function EditUserModal({
                 {!user.approvedAt && <option value="approve">{isPreviewPending ? 'Tentar aprovação novamente (reenviar por e-mail)' : 'Aprovar acesso'}</option>}
                 {!user.approvedAt && <option value="reject">Recusar solicitação</option>}
                 {user.approvedAt && user.active && <option value="resend-provisional">Reenviar senha provisória</option>}
+                {user.approvedAt && <option value="department">Alterar setor de atuação</option>}
                 {user.approvedAt && <option value="role">Alterar perfil</option>}
               </select>
             </label>
@@ -764,6 +823,43 @@ export function EditUserModal({
                   <option value="VIEWER">Consulta</option>
                 </select>
               </label>
+            )}
+
+            {(action === 'approve' || action === 'department') && (
+              <>
+                <label>
+                  Setor de atuação
+                  <select
+                    value={department}
+                    onChange={event => {
+                      setDepartment(event.target.value);
+                      setConfirmed(false);
+                      setError('');
+                    }}
+                  >
+                    <option value="">Nenhum / Não informado</option>
+                    {departments.map(dept => (
+                      <option key={dept} value={dept}>{dept}</option>
+                    ))}
+                    <option value="__other__">Outro (especificar)</option>
+                  </select>
+                </label>
+                {department === '__other__' && (
+                  <label>
+                    Especifique o setor
+                    <input
+                      maxLength={120}
+                      value={customDepartment}
+                      onChange={event => {
+                        setCustomDepartment(event.target.value);
+                        setConfirmed(false);
+                        setError('');
+                      }}
+                      placeholder="Ex.: Manutenção, TI, Fiscal..."
+                    />
+                  </label>
+                )}
+              </>
             )}
 
             {isPreviewPending && action === 'approve' && (

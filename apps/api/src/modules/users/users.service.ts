@@ -5,7 +5,7 @@ import { prisma } from '../../lib/prisma.js';
 import { createCaseNotification } from '../notifications/notification.service.js';
 import { generateProvisionalPassword, hashPassword } from '../../lib/auth/provisional-password.js';
 import { sendProvisionalPasswordEmail } from '../../lib/email/email.service.js';
-import type { changeRoleSchema, createUserSchema, deactivateUserSchema, deleteUserSchema, listUsersSchema } from './users.schema.js';
+import { DEFAULT_USER_DEPARTMENTS, type changeRoleSchema, type createUserSchema, type deactivateUserSchema, type deleteUserSchema, type listUsersSchema } from './users.schema.js';
 
 type ListInput = z.infer<typeof listUsersSchema>;
 type ChangeRoleInput = z.infer<typeof changeRoleSchema>;
@@ -18,6 +18,7 @@ const userSelect = {
   name: true,
   email: true,
   role: true,
+  department: true,
   active: true,
   approvedAt: true,
   rejectedAt: true,
@@ -87,7 +88,7 @@ function assertAdminActionAllowed(targetUser: { id: string; role: UserRole }, ac
   }
 }
 
-export async function approveUser(targetUserId: string, role: 'ANALYST' | 'VIEWER', actorId: string) {
+export async function approveUser(targetUserId: string, role: 'ANALYST' | 'VIEWER', actorId: string, department?: string | null) {
   const current = await prisma.user.findUnique({
     where: { id: targetUserId },
     select: { ...userSelect, approvedById: true },
@@ -200,6 +201,7 @@ export async function approveUser(targetUserId: string, role: 'ANALYST' | 'VIEWE
       where: { id: targetUserId },
       data: {
         role,
+        ...(department !== undefined ? { department: department?.trim() || null } : {}),
         active: true,
         approvedAt: now,
         approvedById: actorId,
@@ -718,6 +720,7 @@ export async function createUser(input: CreateUserInput, actorId: string) {
           name: input.name.trim(),
           email: normalizedEmail,
           role: input.role,
+          department: input.department?.trim() || null,
           active: false, // Inativo até envio aceito
           approvedAt: null, // Pendente até envio aceito
           approvedById: null,
@@ -841,3 +844,65 @@ export async function createUser(input: CreateUserInput, actorId: string) {
 }
 
 export async function listUserAudits(targetUserId: string) { return prisma.adminAudit.findMany({ where: { targetUserId }, select: { id: true, type: true, justification: true, metadata: true, createdAt: true, actor: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 50 }); }
+
+export async function updateUserDepartment(targetUserId: string, department: string | null | undefined, actorId: string) {
+  const current = await prisma.user.findUnique({
+    where: { id: targetUserId },
+    select: { ...userSelect, approvedById: true },
+  });
+  if (!current) throw new UserManagementError('USER_NOT_FOUND', 'Usuário não encontrado.', 404);
+  assertAdminActionAllowed(current, actorId, 'alterar setor de');
+
+  const normalizedDepartment = department?.trim() || null;
+  const updated = await prisma.$transaction(async tx => {
+    const user = await tx.user.update({
+      where: { id: targetUserId },
+      data: { department: normalizedDepartment },
+      select: userSelect,
+    });
+
+    await tx.adminAudit.create({
+      data: {
+        type: 'ROLE_CHANGED',
+        actorId,
+        targetUserId,
+        metadata: {
+          field: 'department',
+          previousDepartment: current.department,
+          newDepartment: normalizedDepartment,
+        },
+      },
+    });
+
+    return user;
+  });
+
+  return updated;
+}
+
+export async function listDepartments() {
+  const standard: string[] = [...DEFAULT_USER_DEPARTMENTS];
+  const [distinctUsers, distinctCases] = await Promise.all([
+    prisma.user.findMany({
+      where: { department: { not: null }, deletedAt: null },
+      select: { department: true },
+      distinct: ['department'],
+    }),
+    prisma.sacRecord.findMany({
+      where: { department: { not: null }, archivedAt: null },
+      select: { department: true },
+      distinct: ['department'],
+    }),
+  ]);
+
+  const allFound = [
+    ...distinctUsers.map(u => u.department?.trim()),
+    ...distinctCases.map(c => c.department?.trim()),
+  ];
+
+  const custom = allFound
+    .filter((d): d is string => Boolean(d && !standard.includes(d as any)));
+
+  return [...new Set([...standard, ...custom])].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
+

@@ -57,6 +57,7 @@ describe('gestão de equipe e fluxo de exclusão de usuário na interface', () =
       expect(actionValues).not.toContain('reactivate');
       expect(actionValues).toContain('resend-provisional');
       expect(actionValues).toContain('role');
+      expect(actionValues).toContain('department');
     });
 
     it('para contas pendentes, oferece aprovação e recusa no modal de edição, sem "Excluir usuário"', () => {
@@ -197,6 +198,41 @@ describe('gestão de equipe e fluxo de exclusão de usuário na interface', () =
       const user = { approvedAt: '2026-09-01T10:00:00.000Z', rejectedAt: null, active: true };
       expect(getAvailableEditActions(user)).toEqual(getAvailableModalActions(user));
       expect(getAvailableEditActions(user).some(a => (a.value as string) === 'delete')).toBe(false);
+    });
+  });
+
+  describe('Setor de atuação do usuário', () => {
+    it('disponibiliza os setores padrão exigidos no cadastro e edição', async () => {
+      const { DEFAULT_USER_DEPARTMENTS } = await import('./api');
+      expect(DEFAULT_USER_DEPARTMENTS).toContain('Estoque');
+      expect(DEFAULT_USER_DEPARTMENTS).toContain('Controle de Qualidade');
+      expect(DEFAULT_USER_DEPARTMENTS).toContain('Qualidade');
+      expect(DEFAULT_USER_DEPARTMENTS).toContain('Recebimento');
+      expect(DEFAULT_USER_DEPARTMENTS).toContain('Almoxarifado');
+      expect(DEFAULT_USER_DEPARTMENTS).toContain('Compras');
+    });
+
+    it('preserva usuários existentes sem setor por suposição (department permanece null/undefined)', () => {
+      const existingUser = {
+        id: 'user-legacy',
+        name: 'Usuário Histórico',
+        email: 'legacy@empresa.com',
+        role: 'ANALYST' as const,
+        active: true,
+        approvedAt: '2026-01-01T00:00:00.000Z',
+        rejectedAt: null,
+        lastLoginAt: null,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        openAssignedCases: 0,
+      };
+
+      expect((existingUser as any).department).toBeUndefined();
+    });
+
+    it('não preenche automaticamente a Área responsável do caso com o setor do usuário', async () => {
+      const { createEmptySacForm } = await import('./sac-form');
+      const emptyForm = createEmptySacForm();
+      expect(emptyForm.responsibleArea).toBe('');
     });
   });
 });

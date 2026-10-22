@@ -18,7 +18,7 @@ attachmentRouter.get(
         where: { id },
         include: {
           record: {
-            select: { id: true, ticket: true, archivedAt: true },
+            select: { id: true, ticket: true, department: true, archivedAt: true },
           },
         },
       });
@@ -30,6 +30,17 @@ attachmentRouter.get(
           'Evidência não encontrada ou registro indisponível.',
           404
         );
+      }
+
+      if (req.auth?.role !== 'ADMIN') {
+        const userDept = req.auth?.department;
+        if (!userDept || !attachment.record.department || attachment.record.department !== userDept) {
+          throw new AttachmentStorageError(
+            'ATTACHMENT_NOT_FOUND',
+            'Evidência não encontrada ou registro indisponível.',
+            404
+          );
+        }
       }
 
       // Check lifecycle status

@@ -30,7 +30,7 @@ vi.mock('../auth/auth.middleware.js', () => ({
   requireAuth: (req: express.Request, res: express.Response, next: express.NextFunction) => {
     const authHeader = req.headers.authorization;
     if (authHeader === 'Bearer valid-token') {
-      req.auth = { userId: 'user-1', role: 'ANALYST', sessionId: 'sess-1' };
+      req.auth = { userId: 'user-1', role: 'ANALYST', department: 'Atendimento', sessionId: 'sess-1' };
       return next();
     }
     if (authHeader === 'Bearer no-permission') {
@@ -101,7 +101,7 @@ describe('attachment download HTTP routes', () => {
     mockPrisma.attachment.findUnique.mockResolvedValueOnce({
       id: 'att-archived',
       storageKey: 'key.pdf',
-      record: { archivedAt: new Date() },
+      record: { archivedAt: new Date(), department: 'Atendimento' },
       status: 'ACTIVE',
     });
     const resArchived = await request('/attachments/att-archived/download', {
@@ -115,7 +115,7 @@ describe('attachment download HTTP routes', () => {
       id: 'att-quarantined',
       storageKey: 'key.pdf',
       status: 'QUARANTINED',
-      record: { archivedAt: null },
+      record: { archivedAt: null, department: 'Atendimento' },
     });
 
     const res = await request('/attachments/att-quarantined/download', {
@@ -131,7 +131,7 @@ describe('attachment download HTTP routes', () => {
       id: 'att-missing-file',
       storageKey: 'key.pdf',
       status: 'ACTIVE',
-      record: { archivedAt: null },
+      record: { archivedAt: null, department: 'Atendimento' },
     });
     mockStorage.exists.mockResolvedValueOnce(false);
 
@@ -155,7 +155,7 @@ describe('attachment download HTTP routes', () => {
       sizeBytes: fileContent.length,
       storageKey: 'attachments/2026/09/uuid.pdf',
       status: 'ACTIVE',
-      record: { archivedAt: null },
+      record: { archivedAt: null, department: 'Atendimento' },
     });
     mockStorage.exists.mockResolvedValueOnce(true);
     mockStorage.openReadStream.mockReturnValueOnce(Readable.from([Buffer.from(fileContent)]));

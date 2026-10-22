@@ -14,8 +14,10 @@ import {
   getAnalyticsDashboard,
   resolvePeriodInterval,
   sanitizeCsvField,
+  streamAnalyticsCsv,
 } from './analytics.service.js';
 import { analyticsFilterSchema } from './analytics.schema.js';
+import { prisma } from '../../lib/prisma.js';
 
 describe('analytics service logic (isolated)', () => {
   const fixedNow = new Date('2026-09-22T12:00:00.000Z');
@@ -98,10 +100,12 @@ describe('analytics service logic (isolated)', () => {
   describe('CSV sanitization and Injection Protection', () => {
     it('prepends single quote to dangerous spreadsheet formula triggers', () => {
       expect(sanitizeCsvField('=SUM(A1:A10)')).toBe('"\'=SUM(A1:A10)"');
+      expect(sanitizeCsvField('   =SUM(A1:A10)')).toBe('"\'   =SUM(A1:A10)"');
       expect(sanitizeCsvField('+12345')).toBe('"\'\+12345"');
       expect(sanitizeCsvField('-cmd')).toBe('"\'\-cmd"');
       expect(sanitizeCsvField('@import')).toBe('"\'\@import"');
       expect(sanitizeCsvField('\tcmd')).toBe('"\'\tcmd"');
+      expect(sanitizeCsvField('\n=cmd')).toBe('"\'\n=cmd"');
     });
 
     it('escapes embedded quotes and handles nulls safely', () => {
@@ -146,6 +150,60 @@ describe('analytics service logic (isolated)', () => {
       expect(result).not.toHaveProperty('topReasons');
       expect(result).not.toHaveProperty('topSubreasons');
       expect(result).not.toHaveProperty('backlogAging');
+    });
+  });
+
+  describe('CSV stream privacy and masking', () => {
+    it('masks customer document CPF/CNPJ in exported CSV rows', async () => {
+      const mockRaw = vi.mocked(prisma.$queryRaw);
+      mockRaw.mockResolvedValueOnce([
+        {
+          id: 'sac-1',
+          ticket: 'SAC-2026-0001',
+          openedAt: new Date('2026-09-01T10:00:00Z'),
+          customerName: 'Cliente Teste',
+          customerDoc: '12345678901',
+          orderNumber: 'PED-123',
+          externalTicket: null,
+          reasonName: 'Dúvida',
+          subreasonName: null,
+          channelName: 'WhatsApp',
+          priority: 'MEDIUM',
+          status: 'PENDING',
+          assigneeName: 'Analista',
+          dueAt: new Date('2026-09-10T18:00:00Z'),
+          completedAt: null,
+          identifiedCause: null,
+          responsibleArea: null,
+          correctiveAction: null,
+          lastOperationalActivityAt: new Date('2026-09-01T10:00:00Z'),
+        },
+      ] as any);
+      mockRaw.mockResolvedValueOnce([]); // second batch empty -> terminates loop
+
+      const chunks: string[] = [];
+      for await (const chunk of streamAnalyticsCsv({ period: '30d' }, fixedNow)) {
+        chunks.push(chunk);
+      }
+      const fullCsv = chunks.join('');
+
+      expect(fullCsv).toContain('***');
+      expect(fullCsv).not.toContain('12345678901');
+      expect(fullCsv).not.toContain('789');
+    });
+
+    it('exclui registros arquivados/excluídos na consulta de exportação CSV', async () => {
+      const mockRaw = vi.mocked(prisma.$queryRaw);
+      mockRaw.mockResolvedValueOnce([]);
+
+      for await (const _ of streamAnalyticsCsv({ period: '30d' }, fixedNow)) {
+        // consome o stream
+      }
+
+      expect(mockRaw).toHaveBeenCalled();
+      const sqlObj = mockRaw.mock.calls[0][0] as any;
+      const sqlString = Array.isArray(sqlObj?.strings) ? sqlObj.strings.join('') : String(sqlObj);
+      expect(sqlString).toContain('"archivedAt" IS NULL');
     });
   });
 });

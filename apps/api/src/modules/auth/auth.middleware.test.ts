@@ -14,8 +14,8 @@ describe('validação imediata de sessão', () => {
   };
 
   it('usa perfil atual do banco e exige sessão revogável vigente', async () => {
-    mock.currentSession.mockResolvedValue({ id: 'session-1', tokenVersion: 3, user: { id: 'user-1', role: 'VIEWER', active: true, approvedAt: new Date(), rejectedAt: null, tokenVersion: 3 } });
-    const result = await run(3); expect(result.next).toHaveBeenCalled(); expect(result.req.auth).toEqual({ userId: 'user-1', role: 'VIEWER', sessionId: 'session-1' });
+    mock.currentSession.mockResolvedValue({ id: 'session-1', tokenVersion: 3, user: { id: 'user-1', role: 'VIEWER', department: null, active: true, approvedAt: new Date(), rejectedAt: null, tokenVersion: 3 } });
+    const result = await run(3); expect(result.next).toHaveBeenCalled(); expect(result.req.auth).toEqual({ userId: 'user-1', role: 'VIEWER', department: null, sessionId: 'session-1' });
   });
 
   it('rejeita token anterior, sessão revogada e usuário inativo', async () => {

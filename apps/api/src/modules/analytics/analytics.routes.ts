@@ -12,7 +12,7 @@ analyticsRouter.use(requirePermission('cases:read'));
 analyticsRouter.get('/dashboard', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filters = analyticsFilterSchema.parse(req.query);
-    const data = await getAnalyticsDashboard(filters);
+    const data = await getAnalyticsDashboard(filters, req.auth?.role, req.auth?.department);
     res.json({ data });
   } catch (error) {
     next(error);
@@ -29,7 +29,7 @@ analyticsRouter.get('/export', async (req: Request, res: Response, next: NextFun
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Cache-Control', 'no-store');
 
-    for await (const chunk of streamAnalyticsCsv(filters)) {
+    for await (const chunk of streamAnalyticsCsv(filters, req.auth?.role, req.auth?.department)) {
       res.write(chunk);
     }
     res.end();

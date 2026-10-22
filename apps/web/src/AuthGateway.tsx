@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import {
+  Building2,
   CircleAlert,
   Eye,
   EyeOff,
@@ -13,7 +14,14 @@ import {
   Zap,
 } from 'lucide-react';
 import { App } from './App';
-import { apiRequest, setSessionExpiredHandler, type AuthUser } from './api';
+import {
+  apiRequest,
+  setSessionExpiredHandler,
+  notifySessionLogin,
+  notifySessionLogout,
+  DEFAULT_USER_DEPARTMENTS,
+  type AuthUser,
+} from './api';
 
 type AuthMode = 'login' | 'register' | 'forgot-password';
 type Feedback = { kind: 'error' | 'info' | 'success'; title?: string; text: string };
@@ -49,15 +57,26 @@ export function AuthGateway() {
   }, []);
 
   useEffect(() => {
-    setSessionExpiredHandler(() => setUser(null));
+    setSessionExpiredHandler(() => {
+      setUser(null);
+    });
     apiRequest<AuthUser>('/auth/session')
       .then(setUser)
-      .catch(() => setUser(null))
+      .catch(() => {
+        setUser(null);
+      })
       .finally(() => setChecking(false));
     return () => setSessionExpiredHandler(undefined);
   }, []);
 
-  const logout = async () => { try { await apiRequest('/auth/logout', { method: 'POST' }); } finally { setUser(null); } };
+  const logout = async () => {
+    try {
+      await apiRequest('/auth/logout', { method: 'POST' });
+    } finally {
+      notifySessionLogout();
+      setUser(null);
+    }
+  };
 
   if (checking) return <div className="app-loading"><span /><p>Carregando ambiente seguro...</p></div>;
   if (resetToken) {
@@ -80,13 +99,13 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [errors, setErrors] = useState<LoginErrors>({});
-  const [form, setForm] = useState({ name: '', email: '', password: '', confirm: '' });
+  const [form, setForm] = useState({ name: '', email: '', password: '', confirm: '', department: '', customDepartment: '' });
 
   useEffect(() => { apiRequest<{ enabled: boolean }>('/auth/registration-config').then(result => setRegistrationEnabled(result.enabled)).catch(() => setRegistrationEnabled(false)); }, []);
 
-  const updateField = (field: 'name' | 'email' | 'password' | 'confirm', value: string) => {
+  const updateField = (field: 'name' | 'email' | 'password' | 'confirm' | 'department' | 'customDepartment', value: string) => {
     setForm(current => ({ ...current, [field]: value }));
-    if (errors[field]) {
+    if (errors[field as keyof LoginErrors]) {
       setErrors(current => ({ ...current, [field]: undefined }));
     }
   };
@@ -131,6 +150,7 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
           method: 'POST',
           body: JSON.stringify({ email: form.email.trim(), password: form.password }),
         });
+        notifySessionLogin();
         onAuthenticated(result.user);
       } else if (mode === 'forgot-password') {
         const result = await apiRequest<{ message: string }>('/auth/forgot-password', {
@@ -139,12 +159,19 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
         });
         setFeedback({ kind: 'success', title: 'Solicitação processada', text: result.message });
       } else {
+        const effectiveDepartment = form.department === '__other__' ? form.customDepartment.trim() : form.department.trim();
         const result = await apiRequest<{ message: string }>('/auth/register', {
           method: 'POST',
-          body: JSON.stringify({ name: form.name, email: form.email, password: form.password, confirmPassword: form.confirm }),
+          body: JSON.stringify({
+            name: form.name,
+            email: form.email,
+            password: form.password,
+            confirmPassword: form.confirm,
+            department: effectiveDepartment || undefined,
+          }),
         });
         setFeedback({ kind: 'success', title: 'Solicitação enviada', text: result.message });
-        setForm(current => ({ ...current, name: '', email: '', password: '', confirm: '' }));
+        setForm(current => ({ ...current, name: '', email: '', password: '', confirm: '', department: '', customDepartment: '' }));
       }
     } catch (error) {
       setFeedback({ kind: 'error', text: error instanceof Error ? error.message : 'Não foi possível continuar.' });
@@ -188,14 +215,51 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => 
           </header>
 
           {mode === 'register' && (
-            <label className="auth-field" htmlFor="auth-name">
-              <span>Nome completo</span>
-              <div className={`${form.name ? 'is-filled ' : ''}${errors.name ? 'is-invalid' : ''}`}>
-                <UserRound aria-hidden="true" />
-                <input id="auth-name" required maxLength={120} value={form.name} onChange={event => updateField('name', event.target.value)} autoComplete="name" aria-invalid={Boolean(errors.name)} aria-describedby={errors.name ? 'auth-name-error' : undefined} />
-              </div>
-              {errors.name && <small id="auth-name-error" className="auth-field-error"><CircleAlert aria-hidden="true" />{errors.name}</small>}
-            </label>
+            <>
+              <label className="auth-field" htmlFor="auth-name">
+                <span>Nome completo</span>
+                <div className={`${form.name ? 'is-filled ' : ''}${errors.name ? 'is-invalid' : ''}`}>
+                  <UserRound aria-hidden="true" />
+                  <input id="auth-name" required maxLength={120} value={form.name} onChange={event => updateField('name', event.target.value)} autoComplete="name" aria-invalid={Boolean(errors.name)} aria-describedby={errors.name ? 'auth-name-error' : undefined} />
+                </div>
+                {errors.name && <small id="auth-name-error" className="auth-field-error"><CircleAlert aria-hidden="true" />{errors.name}</small>}
+              </label>
+
+              <label className="auth-field" htmlFor="auth-department">
+                <span>Setor de atuação</span>
+                <div className={`${form.department ? 'is-filled ' : ''}`}>
+                  <Building2 aria-hidden="true" />
+                  <select
+                    id="auth-department"
+                    value={form.department}
+                    onChange={event => updateField('department', event.target.value)}
+                    style={{ flex: 1, border: 'none', background: 'transparent', outline: 'none', font: 'inherit', color: 'inherit' }}
+                  >
+                    <option value="">Selecione seu setor (opcional)</option>
+                    {DEFAULT_USER_DEPARTMENTS.map(dept => (
+                      <option key={dept} value={dept}>{dept}</option>
+                    ))}
+                    <option value="__other__">Outro (especificar)</option>
+                  </select>
+                </div>
+              </label>
+
+              {form.department === '__other__' && (
+                <label className="auth-field" htmlFor="auth-custom-department">
+                  <span>Especifique o setor</span>
+                  <div className={`${form.customDepartment ? 'is-filled ' : ''}`}>
+                    <Building2 aria-hidden="true" />
+                    <input
+                      id="auth-custom-department"
+                      maxLength={120}
+                      value={form.customDepartment}
+                      onChange={event => updateField('customDepartment', event.target.value)}
+                      placeholder="Ex.: Manutenção, TI, Fiscal..."
+                    />
+                  </div>
+                </label>
+              )}
+            </>
           )}
 
           <label className="auth-field" htmlFor="auth-email">

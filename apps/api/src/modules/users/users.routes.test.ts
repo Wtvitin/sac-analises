@@ -521,4 +521,99 @@ describe('rotas diretas de gestão de equipe e exclusão de usuário (users.rout
       expect(body.error.code).toBe('VALIDATION_ERROR');
     });
   });
+
+  describe('Rotas de setor de atuação (department)', () => {
+    it('GET /departments retorna lista de setores incluindo os padrões', async () => {
+      mock.database.user.findMany.mockResolvedValue([
+        { department: 'TI' },
+        { department: 'Almoxarifado' },
+      ]);
+
+      const response = await request('/users/departments', {
+        headers: { 'x-actor-id': 'admin-1', 'x-actor-role': 'ADMIN' },
+      });
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.data).toContain('Estoque');
+      expect(body.data).toContain('Controle de Qualidade');
+      expect(body.data).toContain('Qualidade');
+      expect(body.data).toContain('Recebimento');
+      expect(body.data).toContain('Almoxarifado');
+      expect(body.data).toContain('Compras');
+      expect(body.data).toContain('TI');
+    });
+
+    it('PATCH /users/:id/department atualiza o setor com auditoria', async () => {
+      mock.database.user.findUnique.mockResolvedValue({
+        id: 'user-1',
+        name: 'Usuário Teste',
+        email: 'user@empresa.com',
+        role: 'ANALYST',
+        department: null,
+      });
+      mock.database.user.update.mockResolvedValue({
+        id: 'user-1',
+        name: 'Usuário Teste',
+        email: 'user@empresa.com',
+        role: 'ANALYST',
+        department: 'Recebimento',
+      });
+
+      const response = await request('/users/user-1/department', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'x-actor-id': 'admin-1', 'x-actor-role': 'ADMIN' },
+        body: JSON.stringify({ department: 'Recebimento' }),
+      });
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.data.department).toBe('Recebimento');
+      expect(mock.database.adminAudit.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            type: 'ROLE_CHANGED',
+            targetUserId: 'user-1',
+            actorId: 'admin-1',
+            metadata: expect.objectContaining({
+              field: 'department',
+              newDepartment: 'Recebimento',
+            }),
+          }),
+        })
+      );
+    });
+  });
+
+  describe('Limitação de taxa operacional em rotas autenticadas', () => {
+    it('limita reenvios repetidos do mesmo administrador sem bloquear outros administradores no mesmo IP', async () => {
+      mock.database.user.findUnique.mockResolvedValue(null);
+
+      // Admin A faz 10 tentativas (esgotando a cota individual)
+      for (let i = 0; i < 10; i++) {
+        const res = await request('/users/user-target-1/resend-provisional', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-actor-id': 'admin-quota-a', 'x-actor-role': 'ADMIN' },
+        });
+        expect(res.status).toBe(404); // Usuário não existe, mas consome o limitador
+      }
+
+      // 11ª tentativa do Admin A: bloqueado pelo limitador com 429
+      const blockedRes = await request('/users/user-target-1/resend-provisional', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-actor-id': 'admin-quota-a', 'x-actor-role': 'ADMIN' },
+      });
+      expect(blockedRes.status).toBe(429);
+      const blockedJson = await blockedRes.json() as any;
+      expect(blockedJson.error.code).toBe('TOO_MANY_REQUESTS');
+      expect(blockedJson.error.message).toContain('administrador');
+
+      // Admin B no mesmo IP tenta a rota: NÃO é bloqueado
+      const adminBRes = await request('/users/user-target-1/resend-provisional', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-actor-id': 'admin-quota-b', 'x-actor-role': 'ADMIN' },
+      });
+      expect(adminBRes.status).toBe(404); // NOT 429! Passa pelo limitador
+    });
+  });
 });

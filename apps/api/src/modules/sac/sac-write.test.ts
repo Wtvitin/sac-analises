@@ -113,8 +113,9 @@ describe('SAC creation and editing persistence (isolated)', () => {
 
     const result = await createSacRecord(parsed, 'admin-1', 'b5215944-a474-4b7f-9efe-f9d3e80b7c2e');
     expect(result.created).toBe(true);
-    // Customer document must be masked in response
-    expect(result.record.customer.document).toBe('***.***.789-**');
+    // Customer document must be masked in response to exact '***' without digits
+    expect(result.record.customer.document).toBe('***');
+    expect(result.record.customer.document).not.toContain('789');
     expect(result.record.customer.isDocumentMasked).toBe(true);
 
     const createCall = mock.sacRecord.create.mock.calls[0][0];
@@ -129,7 +130,7 @@ describe('SAC creation and editing persistence (isolated)', () => {
     });
     mock.database.adminAudit.create.mockResolvedValue({});
 
-    const result = await revealSacRecordSensitive('sac-2', 'customerDocument', 'admin-1');
+    const result = await revealSacRecordSensitive('sac-2', 'customerDocument', 'admin-1', 'ADMIN');
     expect(result.revealedValue).toBe('123.456.789-00');
     expect(result.category).toBe('CPF_CNPJ');
 
@@ -141,6 +142,13 @@ describe('SAC creation and editing persistence (isolated)', () => {
     expect(auditCall.data.metadata.resourceType).toBe('SAC_RECORD');
     expect(auditCall.data.metadata.resourceId).toBe('sac-2');
     expect(JSON.stringify(auditCall.data)).not.toContain('123.456.789-00');
+  });
+
+  it('rejects non-admin (ANALYST, VIEWER) from revealing sensitive customer document on SAC record', async () => {
+    await expect(revealSacRecordSensitive('sac-2', 'customerDocument', 'analyst-1', 'ANALYST'))
+      .rejects.toThrow('Apenas administradores podem revelar dados sensíveis.');
+    await expect(revealSacRecordSensitive('sac-2', 'customerDocument', 'viewer-1', 'VIEWER'))
+      .rejects.toThrow('Apenas administradores podem revelar dados sensíveis.');
   });
 });
 
