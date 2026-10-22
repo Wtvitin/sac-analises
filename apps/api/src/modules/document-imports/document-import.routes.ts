@@ -44,7 +44,7 @@ const upload = multer({
 documentImportRouter.use(requireAuth);
 
 documentImportRouter.post(
-  '/',
+  ['/', '/upload'],
   importUploadIpLimiter,
   importUploadUserLimiter,
   requirePermission('cases:write'),
@@ -141,3 +141,17 @@ documentImportRouter.delete('/:id', async (req: Request, res: Response, next: Ne
   }
 });
 
+documentImportRouter.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
+  if (error instanceof DocumentImportError) {
+    return res.status(error.status).json({ error: { code: error.code, message: error.message } });
+  }
+  if (error instanceof multer.MulterError) {
+    const message = error.code === 'LIMIT_FILE_SIZE'
+      ? 'O arquivo deve possuir até 10 MB.'
+      : (error.code === 'LIMIT_FILE_COUNT' || error.code === 'LIMIT_UNEXPECTED_FILE'
+        ? 'Envie apenas um arquivo de formulário.'
+        : 'Falha no envio do arquivo.');
+    return res.status(422).json({ error: { code: error.code, message } });
+  }
+  return next(error);
+});

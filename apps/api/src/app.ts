@@ -1,6 +1,7 @@
 import cors from 'cors';
 import express from 'express';
 import helmet from 'helmet';
+import multer from 'multer';
 import { ZodError } from 'zod';
 import { sacRouter } from './modules/sac/sac.routes.js';
 import { authRouter } from './modules/auth/auth.routes.js';
@@ -58,6 +59,10 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
   if (error instanceof ZodError) return res.status(422).json({ error: { code: 'VALIDATION_ERROR', details: error.issues } });
   if (error instanceof SyntaxError) return res.status(400).json({ error: { code: 'INVALID_JSON', message: 'Conteúdo JSON inválido.' } });
   if (typeof error === 'object' && error && 'type' in error && error.type === 'entity.too.large') return res.status(413).json({ error: { code: 'PAYLOAD_TOO_LARGE', message: 'Conteúdo excede o limite permitido.' } });
+  if (error instanceof multer.MulterError) {
+    const message = error.code === 'LIMIT_FILE_SIZE' ? 'Cada arquivo deve possuir até 10 MB.' : 'Falha no envio do arquivo.';
+    return res.status(422).json({ error: { code: error.code, message } });
+  }
   if (error instanceof Error && error.message === 'Origin not allowed') return res.status(403).json({ error: { code: 'ORIGIN_REJECTED', message: 'Origem não autorizada.' } });
   const safeError = error instanceof Error ? { name: error.name } : { name: 'UnknownError' };
   console.error('Unhandled application error', safeError);
