@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
-import { getStorageProvider, sanitizeOriginalName } from '../../lib/storage/index.js';
+import { getStorageProvider, LocalStorageProvider, sanitizeOriginalName } from '../../lib/storage/index.js';
 import { extractDocumentData, detectDocumentFormat, type FormExtractionResult } from '../../lib/document-extraction/index.js';
 import {
   sanitizeDocumentImportPayload,
@@ -130,10 +131,11 @@ export async function getDocumentImport(
 
   // Check expiration
   if (session.status === 'READY_FOR_REVIEW' && session.expiresAt < new Date()) {
-    await prisma.documentImport.update({
-      where: { id },
+    const expired = await prisma.documentImport.updateMany({
+      where: { id, status: 'READY_FOR_REVIEW' },
       data: { status: 'EXPIRED' },
     });
+    if (!expired.count) return getDocumentImport(id, userId, userRole);
     session.status = 'EXPIRED';
   }
 
@@ -236,92 +238,82 @@ export async function cancelDocumentImport(
     throw new DocumentImportError('FORBIDDEN', 'Você não tem permissão para cancelar esta importação.', 403);
   }
 
-  await prisma.documentImport.update({
-    where: { id },
+  const cancelled = await prisma.documentImport.updateMany({
+    where: { id, status: { not: 'CONFIRMED' } },
     data: { status: 'CANCELLED' },
   });
+  if (!cancelled.count) {
+    throw new DocumentImportError('IMPORT_UNAVAILABLE', 'O documento já foi vinculado a um chamado.', 409);
+  }
 
   // Clean physical temp file
-  const storage = getStorageProvider();
-  await storage.remove(session.storageKey).catch(() => {});
+  await removeImportFile(session.storageKey);
 
   return { success: true };
 }
 
+export async function loadConfirmableImport(id: string, userId: string) {
+  const session = await prisma.documentImport.findUnique({ where: { id } });
+  if (!session || session.userId !== userId) {
+    throw new DocumentImportError('IMPORT_NOT_FOUND', 'Importação não encontrada. Importe novamente o documento.', 404);
+  }
+  if (session.status !== 'READY_FOR_REVIEW' || session.expiresAt <= new Date()) {
+    throw new DocumentImportError('IMPORT_UNAVAILABLE', 'Esta importação já foi usada, cancelada ou expirou. Importe novamente o documento.', 409);
+  }
+  return session;
+}
+
 export async function confirmDocumentImport(
+  tx: Pick<Prisma.TransactionClient, 'documentImport'>,
   importId: string,
   recordId: string,
-  preserveAsAttachment: boolean,
-  userId: string
-): Promise<void> {
-  const session = await prisma.documentImport.findUnique({
-    where: { id: importId },
+  userId: string,
+) {
+  const now = new Date();
+  const changed = await tx.documentImport.updateMany({
+    where: { id: importId, userId, status: 'READY_FOR_REVIEW', expiresAt: { gt: now } },
+    data: { status: 'CONFIRMED', confirmedAt: now, recordId },
   });
-
-  if (!session || session.userId !== userId || session.status !== 'READY_FOR_REVIEW') {
-    return; // Non-blocking if already confirmed or invalid
+  if (changed.count !== 1) {
+    throw new DocumentImportError('IMPORT_UNAVAILABLE', 'Esta importação já foi usada, cancelada ou expirou. Importe novamente o documento.', 409);
   }
+}
 
-  await prisma.documentImport.update({
-    where: { id: importId },
-    data: {
-      status: 'CONFIRMED',
-      confirmedAt: new Date(),
-      recordId,
-    },
-  });
-
-  const storage = getStorageProvider();
-
-  // If user requested to preserve the imported form as a case attachment
-  if (preserveAsAttachment) {
-    try {
-      const exists = await storage.exists(session.storageKey);
-      if (exists) {
-        // Read file stream safely
-        const stream = await storage.openReadStream(session.storageKey);
-        const chunks: Buffer[] = [];
-        for await (const chunk of stream) {
-          chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
-        }
-        const buffer = Buffer.concat(chunks);
-
-        const now = new Date();
-        const year = String(now.getUTCFullYear());
-        const month = String(now.getUTCMonth() + 1).padStart(2, '0');
-        const ext = session.originalName.split('.').pop()?.toLowerCase() || (session.format === 'PDF' ? 'pdf' : session.format === 'XLSX' ? 'xlsx' : 'png');
-        const permanentStorageKey = `attachments/${year}/${month}/${randomUUID()}.${ext}`;
-
-        const baseDir = (storage as any).getBaseDirectory?.() || process.env.LOCAL_UPLOAD_DIR?.trim() || 'data/uploads';
-        const fullPermPath = resolve(baseDir, permanentStorageKey);
-        await mkdir(dirname(fullPermPath), { recursive: true });
-        await writeFile(fullPermPath, buffer);
-
-        const sha256 = createHash('sha256').update(buffer).digest('hex');
-        const mimeType = session.format === 'PDF' ? 'application/pdf'
-          : session.format === 'XLSX' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-          : 'image/png';
-
-        await prisma.attachment.create({
-          data: {
-            recordId,
-            originalName: session.originalName,
-            mimeType,
-            sizeBytes: buffer.length,
-            storageKey: permanentStorageKey,
-            storageProvider: storage.providerName || 'local',
-            sha256,
-            status: 'ACTIVE',
-            scanStatus: 'CLEAN',
-            authorId: userId,
-          },
-        });
-      }
-    } catch (err) {
-      console.error('Falha ao promover anexo importado para o chamado:', err);
-    }
+export async function removeImportFile(storageKey: string) {
+  try {
+    await getStorageProvider().remove(storageKey);
+  } catch (error) {
+    console.error('Não foi possível limpar um arquivo de importação:', error);
   }
+}
 
-  // Remove temporary import file
-  await storage.remove(session.storageKey).catch(() => {});
+export async function preserveImportedOriginal(session: Awaited<ReturnType<typeof loadConfirmableImport>>, userId: string) {
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const month = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const ext = session.storageKey.split('.').pop();
+  const storageKey = `attachments/${year}/${month}/${randomUUID()}.${ext}`;
+
+  try {
+    const storage = getStorageProvider();
+    if (!(storage instanceof LocalStorageProvider)) throw new Error('Armazenamento de importação indisponível');
+    const stream = await storage.openReadStream(session.storageKey);
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+    const buffer = Buffer.concat(chunks);
+    const sha256 = createHash('sha256').update(buffer).digest('hex');
+    if (sha256 !== session.sha256) throw new Error('Arquivo original divergente');
+    const mimeType = session.format === 'PDF' ? 'application/pdf'
+      : session.format === 'XLSX' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      : buffer[0] === 0xff ? 'image/jpeg' : 'image/png';
+
+    const target = resolve(storage.getBaseDirectory(), storageKey);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, buffer, { flag: 'wx' });
+    return { originalName: session.originalName, mimeType, sizeBytes: buffer.length, storageKey, storageProvider: storage.providerName, sha256, authorId: userId };
+  } catch (error) {
+    await removeImportFile(storageKey);
+    console.error('Não foi possível preservar o documento original:', error);
+    throw new DocumentImportError('IMPORT_ORIGINAL_UNAVAILABLE', 'Não foi possível anexar o documento original. Os dados continuam no formulário. Tente salvar novamente ou desmarque a opção de anexar o original.', 503);
+  }
 }

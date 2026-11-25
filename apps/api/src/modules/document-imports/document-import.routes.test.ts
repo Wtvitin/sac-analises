@@ -7,6 +7,7 @@ const mockPrisma = vi.hoisted(() => ({
     create: vi.fn(),
     findUnique: vi.fn(),
     update: vi.fn(),
+    updateMany: vi.fn(),
   },
   customer: {
     findMany: vi.fn(),
@@ -102,7 +103,7 @@ vi.mock('../../lib/document-extraction/index.js', async (importOriginal) => {
 });
 
 import { documentImportRouter } from './document-import.routes.js';
-import { confirmDocumentImport } from './document-import.service.js';
+import { confirmDocumentImport, loadConfirmableImport } from './document-import.service.js';
 
 let server: Server | undefined;
 
@@ -423,7 +424,7 @@ describe('Document Imports API Routes', () => {
         storageKey: 'temp/imports/session-user-1.pdf',
         status: 'READY_FOR_REVIEW',
       });
-      mockPrisma.documentImport.update.mockResolvedValue({});
+      mockPrisma.documentImport.updateMany.mockResolvedValue({ count: 1 });
 
       const res = await request('/document-imports/session-user-1', {
         method: 'DELETE',
@@ -433,8 +434,8 @@ describe('Document Imports API Routes', () => {
       expect(res.status).toBe(200);
       const json = await res.json() as any;
       expect(json.data.success).toBe(true);
-      expect(mockPrisma.documentImport.update).toHaveBeenCalledWith({
-        where: { id: 'session-user-1' },
+      expect(mockPrisma.documentImport.updateMany).toHaveBeenCalledWith({
+        where: { id: 'session-user-1', status: { not: 'CONFIRMED' } },
         data: { status: 'CANCELLED' },
       });
       expect(mockStorage.remove).toHaveBeenCalledWith('temp/imports/session-user-1.pdf');
@@ -454,7 +455,7 @@ describe('Document Imports API Routes', () => {
       });
 
       expect(res.status).toBe(403);
-      expect(mockPrisma.documentImport.update).not.toHaveBeenCalled();
+      expect(mockPrisma.documentImport.updateMany).not.toHaveBeenCalled();
       expect(mockStorage.remove).not.toHaveBeenCalled();
     });
   });
@@ -560,46 +561,35 @@ describe('Document Imports API Routes', () => {
     });
   });
 
-  describe('confirmDocumentImport - cross-identity isolation', () => {
-    it('prevents user B from confirming an import session belonging to user A', async () => {
-      mockPrisma.documentImport.findUnique.mockResolvedValue({
-        id: 'session-user-1',
-        userId: 'user-1',
-        status: 'READY_FOR_REVIEW',
-        storageKey: 'temp/imports/session-user-1.pdf',
-        originalName: 'form.pdf',
-        format: 'PDF',
-      });
-
-      // User 2 attempts to confirm user 1's session
-      await confirmDocumentImport('session-user-1', 'rec-hijacked', false, 'user-2');
-
-      // Must NOT update the session
-      expect(mockPrisma.documentImport.update).not.toHaveBeenCalled();
+  describe('import confirmation', () => {
+    it('rejects an import owned by another user before creating a case', async () => {
+      mockPrisma.documentImport.findUnique.mockResolvedValue({ userId: 'user-1' });
+      await expect(loadConfirmableImport('session-user-1', 'user-2'))
+        .rejects.toMatchObject({ code: 'IMPORT_NOT_FOUND', status: 404 });
+      expect(mockPrisma.documentImport.updateMany).not.toHaveBeenCalled();
     });
 
-    it('allows owner (user A) to confirm their own import session', async () => {
-      mockPrisma.documentImport.findUnique.mockResolvedValue({
-        id: 'session-user-1',
-        userId: 'user-1',
-        status: 'READY_FOR_REVIEW',
-        storageKey: 'temp/imports/session-user-1.pdf',
-        originalName: 'form.pdf',
-        format: 'PDF',
+    it.each([
+      ['CONFIRMED', new Date('2099-01-01')],
+      ['CANCELLED', new Date('2099-01-01')],
+      ['READY_FOR_REVIEW', new Date('2000-01-01')],
+    ])('rejects a session in state %s with expiry %s', async (status, expiresAt) => {
+      mockPrisma.documentImport.findUnique.mockResolvedValue({ userId: 'user-1', status, expiresAt });
+      await expect(loadConfirmableImport('session-user-1', 'user-1'))
+        .rejects.toMatchObject({ code: 'IMPORT_UNAVAILABLE', status: 409 });
+    });
+
+    it('checks owner, readiness and expiration atomically in the caller transaction', async () => {
+      const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+      const tx = { documentImport: { updateMany } } as unknown as Parameters<typeof confirmDocumentImport>[0];
+      await confirmDocumentImport(tx, 'session-user-1', 'rec-legit', 'user-1');
+      expect(updateMany).toHaveBeenCalledWith({
+        where: { id: 'session-user-1', userId: 'user-1', status: 'READY_FOR_REVIEW', expiresAt: { gt: expect.any(Date) } },
+        data: { status: 'CONFIRMED', recordId: 'rec-legit', confirmedAt: expect.any(Date) },
       });
-      mockPrisma.documentImport.update.mockResolvedValue({});
-
-      await confirmDocumentImport('session-user-1', 'rec-legit', false, 'user-1');
-
-      expect(mockPrisma.documentImport.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: 'session-user-1' },
-          data: expect.objectContaining({
-            status: 'CONFIRMED',
-            recordId: 'rec-legit',
-          }),
-        })
-      );
+      updateMany.mockResolvedValueOnce({ count: 0 });
+      await expect(confirmDocumentImport(tx, 'session-user-1', 'rec-second', 'user-1'))
+        .rejects.toMatchObject({ code: 'IMPORT_UNAVAILABLE', status: 409 });
     });
   });
 });

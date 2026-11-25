@@ -4,7 +4,7 @@ import {
   AlertCircle, AlertTriangle, Building2, Check, ChevronDown, Clock, Copy, Eye, EyeOff, FileCheck, FileText, HelpCircle, Info, LoaderCircle,
   Lock, PackagePlus, Paperclip, PenTool, Plus, ShieldAlert, Trash2, UploadCloud, X,
 } from 'lucide-react';
-import { apiRequest, DEFAULT_USER_DEPARTMENTS, type AuthUser } from './api';
+import { apiRequest, ApiRequestError, DEFAULT_USER_DEPARTMENTS, type AuthUser } from './api';
 import type { OperationalIndicators } from './data';
 import {
   ACCEPTED_FILE_TYPES, createEmptyItem, createEmptyReference, createEmptySacForm, hasUnsavedSacChanges,
@@ -165,6 +165,8 @@ export function SacRecordForm({
   // Document Import state
   const [entryMode, setEntryMode] = useState<'manual' | 'import'>(() => initialImportDraft ? 'import' : 'manual');
   const [importSessionId, setImportSessionId] = useState<string | null>(() => initialImportDraft?.importSessionId || null);
+  const [originalSaveFailed, setOriginalSaveFailed] = useState(false);
+  const saveErrorRef = useRef<HTMLParagraphElement>(null);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   const [importedFile, setImportedFile] = useState<{ name: string; format: string } | null>(() => initialImportDraft?.importedFile || null);
@@ -364,6 +366,8 @@ export function SacRecordForm({
       await apiRequest(`/document-imports/${importSessionId}`, { method: 'DELETE' }).catch(() => {});
     }
     setImportSessionId(null);
+    setOriginalSaveFailed(false);
+    setApiError('');
     setImportedFile(null);
     setExtractedData(null);
     setSuggestedOpenedAt('');
@@ -760,14 +764,19 @@ export function SacRecordForm({
     if (duplicateExternal && !allowDuplicate) nextErrors.externalTicket = 'Confirme a possível duplicidade antes de continuar.';
     if (!reasons.length) nextErrors.reasonId = 'Cadastre pelo menos um motivo antes de criar um registro.';
     if (!channels.length) nextErrors.channelId = 'Cadastre pelo menos um canal antes de criar um registro.';
-    setErrors(nextErrors); setApiError(''); if (Object.keys(nextErrors).length) { focusFirstError(nextErrors); return; }
+    setErrors(nextErrors); setApiError(''); setOriginalSaveFailed(false);
+    if (Object.keys(nextErrors).length) { focusFirstError(nextErrors); return; }
     setSaving(true);
     try {
       const payload = sacFormPayload(form, allowDuplicate, record?.updatedAt, importSessionId, preserveImportAsAttachment);
       const body = new FormData(); body.append('payload', JSON.stringify(payload)); files.forEach(file => body.append('files', file));
       const saved = await apiRequest<DetailedRecord>(recordId ? `/sac-records/${recordId}` : '/sac-records', { method: recordId ? 'PATCH' : 'POST', body, headers: recordId ? {} : { 'Idempotency-Key': idempotencyKey.current } });
       onSaved(saved, !recordId);
-    } catch (error) { setApiError(error instanceof Error ? error.message : 'Não foi possível salvar o registro.'); }
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : 'Não foi possível salvar o registro.');
+      setOriginalSaveFailed(error instanceof ApiRequestError && error.code === 'IMPORT_ORIGINAL_UNAVAILABLE');
+      requestAnimationFrame(() => saveErrorRef.current?.focus());
+    }
     finally { setSaving(false); }
   };
 
@@ -1549,7 +1558,7 @@ export function SacRecordForm({
           </fieldset>
 
           {optionsError && <p className="sac-form-api-error" role="alert">{optionsError}</p>}
-          {apiError && <p className="sac-form-api-error" role="alert">{apiError}</p>}
+          {apiError && <p ref={saveErrorRef} tabIndex={-1} className="sac-form-api-error" role="alert">{apiError}</p>}
         </div>
       )}
     </>}
@@ -1560,6 +1569,8 @@ export function SacRecordForm({
           <><LoaderCircle className="spin" />{editing ? 'Salvando...' : 'Criando...'}</>
         ) : editing ? (
           'Salvar alterações'
+        ) : originalSaveFailed ? (
+          'Tentar salvar novamente'
         ) : importSessionId ? (
           'Revisar e criar registro'
         ) : (

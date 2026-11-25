@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -74,16 +74,17 @@ describe('storage reconciliation and orphan detection', () => {
     // Create an old temp file
     const oldTempFile = join(tempDir, 'old-upload.tmp');
     await writeFile(oldTempFile, 'abandoned temp data');
+    const oldTimestamp = new Date(Date.now() - 120_000);
+    await utimes(oldTempFile, oldTimestamp, oldTimestamp);
 
     mockPrisma.attachment.findMany.mockResolvedValue([]);
 
-    // Running with tempExpiryMinutes: 0 means any file is immediately considered expired
-    const reportDry = await reconcileStorage({ dryRun: true, tempExpiryMinutes: 0 });
+    const reportDry = await reconcileStorage({ dryRun: true, tempExpiryMinutes: 1 });
     expect(reportDry.expiredTemporaries).toContain('old-upload.tmp');
     expect(reportDry.actionsTaken).toHaveLength(0);
 
     // Now run with dryRun: false
-    const reportApply = await reconcileStorage({ dryRun: false, tempExpiryMinutes: 0 });
+    const reportApply = await reconcileStorage({ dryRun: false, tempExpiryMinutes: 1 });
     expect(reportApply.expiredTemporaries).toContain('old-upload.tmp');
     expect(reportApply.actionsTaken.some((a) => a.includes('old-upload.tmp'))).toBe(true);
   });

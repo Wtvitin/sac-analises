@@ -55,6 +55,16 @@ describe('SAC creation and editing persistence (isolated)', () => {
     expect(mock.sacRecord.create).not.toHaveBeenCalled();
   });
 
+  it('accepts imported references without optional notes in creation and editing', () => {
+    const references = [
+      { type: 'ATTENDANCE', value: '000123', note: null },
+      { type: 'ORDER', value: 'PED-456', note: '  Conferido  ' },
+    ];
+    const expected = [references[0], { ...references[1], note: 'Conferido' }];
+    expect(createSacRecordSchema.parse({ ...input, references }).references).toEqual(expected);
+    expect(updateSacRecordSchema.parse({ ...input, updatedAt: input.openedAt, references }).references).toEqual(expected);
+  });
+
   it('updates with optimistic concurrency, replaces items and records before/after audit data', async () => {
     const updatedAt = new Date('2026-09-14T13:00:00Z'); const saved = { id: 'sac-1', ticket: 'SAC-2026-0007' };
     mock.sacRecord.findFirst.mockResolvedValue({ ...updateSacRecordSchema.parse({ ...input, updatedAt }), id: 'sac-1', channelId: 'channel-1', items: [], _count: { attachments: 0 } });

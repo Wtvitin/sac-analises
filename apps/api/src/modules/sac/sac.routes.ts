@@ -11,6 +11,7 @@ import {
   SacRecordError, addSacComment, assignSacRecord, changeSacDueDate, changeSacPriority, changeSacStatus, checkExternalTicket, createSacRecord, deleteSacRecord, getSacHistory, getSacRecord, listSacRecords, revealSacRecordSensitive, searchCustomers, takeSacRecord, transferSacRecordDepartment, updateSacRecord, updateSacTreatment,
 } from './sac.service.js';
 import { requirePermission, requireRole } from '../auth/auth.middleware.js';
+import { DocumentImportError } from '../document-imports/document-import.service.js';
 
 export const sacRouter = Router();
 
@@ -149,7 +150,7 @@ sacRouter.post('/:id/delete', requireRole('ADMIN'), async (req, res, next) => {
 });
 
 sacRouter.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
-  if (error instanceof SacRecordError || error instanceof AttachmentStorageError) return res.status(error.status).json({ error: { code: error.code, message: error.message } });
+  if (error instanceof SacRecordError || error instanceof AttachmentStorageError || error instanceof DocumentImportError) return res.status(error.status).json({ error: { code: error.code, message: error.message } });
   if (error instanceof multer.MulterError) {
     const message = error.code === 'LIMIT_FILE_SIZE' ? 'Cada arquivo deve possuir até 10 MB.' : `Envie no máximo ${MAX_ATTACHMENT_COUNT} arquivos.`;
     return res.status(422).json({ error: { code: error.code, message } });

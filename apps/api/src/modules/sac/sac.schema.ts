@@ -84,7 +84,7 @@ export const sacReferenceTypeSchema = z.enum([
 export const sacReferenceSchema = z.object({
   type: sacReferenceTypeSchema,
   value: z.string().trim().min(1, 'Informe o valor da referência.').max(120),
-  note: optionalText(300),
+  note: z.string().max(300).nullish().transform(value => value?.trim() || null),
 });
 
 const sacRecordFields = {
@@ -113,7 +113,7 @@ export const createSacRecordSchema = z.object({
   ...sacRecordFields,
   department: z.string().trim().max(100).optional().transform(value => value || null),
   allowDuplicateExternalTicket: z.boolean().default(false),
-  importSessionId: z.string().trim().optional(),
+  importSessionId: z.string().trim().min(1).optional(),
   preserveImportAsAttachment: z.boolean().default(false),
 }).refine(validDates, { path: ['dueAt'], message: 'O prazo não pode ser anterior à data de abertura.' });
 

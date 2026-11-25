@@ -6,7 +6,7 @@ import { assertCanCancel, assertCanComplete, assertCanReactivate, assertCanReope
 import { classifyOperationalAttention, operationalBoundaries } from '../../domain/operational-attention.js';
 import { normalizeCatalogName } from '../catalog/catalog.schema.js';
 import { createCaseNotification } from '../notifications/notification.service.js';
-import { confirmDocumentImport } from '../document-imports/document-import.service.js';
+import { DocumentImportError, confirmDocumentImport, loadConfirmableImport, preserveImportedOriginal, removeImportFile } from '../document-imports/document-import.service.js';
 import { logSensitiveDataRevealAudit, maskCpfCnpj, type SensitiveCategory } from '../../lib/privacy/privacy.service.js';
 import { listSacRecordsSchema } from './sac.schema.js';
 import type { assignmentSchema, changeStatusSchema, commentSchema, createSacRecordSchema, deleteSacRecordSchema, dueDateChangeSchema, historyQuerySchema, priorityChangeSchema, takeCaseSchema, transferDepartmentSchema, updateSacRecordSchema, updateTreatmentSchema } from './sac.schema.js';
@@ -354,7 +354,16 @@ export async function createSacRecord(
 
   const existing = await prisma.sacRecord.findUnique({ where: { idempotencyKey }, include: recordInclude });
   if (existing) return { record: maskRecordSensitiveData({ ...existing, operational: classifyOperationalAttention(existing) }), created: false };
+  let original: StoredAttachment | undefined;
   try {
+    const session = input.importSessionId ? await loadConfirmableImport(input.importSessionId, actorId) : undefined;
+    if (session && input.preserveImportAsAttachment) {
+      if (attachments.length >= MAX_ATTACHMENT_COUNT) {
+        throw new SacRecordError('TOO_MANY_ATTACHMENTS', `O documento importado conta como uma das ${MAX_ATTACHMENT_COUNT} evidências permitidas.`, 422);
+      }
+      original = await preserveImportedOriginal(session, actorId);
+    }
+    const filesToAttach = original ? [...attachments, original] : attachments;
     const result = await prisma.$transaction(async tx => {
       const replay = await tx.sacRecord.findUnique({ where: { idempotencyKey }, include: recordInclude });
       if (replay) return { record: maskRecordSensitiveData({ ...replay, operational: classifyOperationalAttention(replay) }), created: false };
@@ -415,7 +424,7 @@ export async function createSacRecord(
           } : undefined,
           items: { create: input.items.map(item => ({ code: item.code, description: item.description, batch: item.batch, quantity: item.quantity, note: item.note })) },
           attachments: {
-            create: attachments.map(att => ({
+            create: filesToAttach.map(att => ({
               originalName: att.originalName,
               mimeType: att.mimeType,
               sizeBytes: att.sizeBytes,
@@ -427,12 +436,13 @@ export async function createSacRecord(
           },
         },
       });
+      if (session) await confirmDocumentImport(tx, session.id, created.id, actorId);
       await tx.activityLog.create({
         data: {
           recordId: created.id,
           actorId,
           eventType: 'CREATED',
-          summary: `Registro ${ticket} criado no setor ${caseDepartment}.${input.importSessionId ? ' Criado a partir de formulário importado.' : ''} Responsável: ${assignee?.name ?? 'Sem responsável'}. Status inicial: PENDING.`,
+          summary: `Registro ${ticket} criado no setor ${caseDepartment}.${session ? ' Criado a partir de formulário importado.' : ''} Responsável: ${assignee?.name ?? 'Sem responsável'}. Status inicial: PENDING.`,
           createdAt: activityAt,
         },
       });
@@ -441,19 +451,20 @@ export async function createSacRecord(
       return { record: maskRecordSensitiveData({ ...record, operational: classifyOperationalAttention(record) }), created: true };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
-    if (result.created && input.importSessionId) {
-      await confirmDocumentImport(input.importSessionId, result.record.id, Boolean(input.preserveImportAsAttachment), actorId);
-      const reloaded = await prisma.sacRecord.findUnique({ where: { id: result.record.id }, include: recordInclude });
-      if (reloaded) {
-        return { record: maskRecordSensitiveData({ ...reloaded, operational: classifyOperationalAttention(reloaded) }), created: true };
-      }
-    }
+    if (result.created && session) await removeImportFile(session.storageKey);
+    if (!result.created && original) await removeImportFile(original.storageKey);
 
     return result;
   } catch (error) {
-    if (errorCode(error) === 'P2002') {
+    if (original) await removeImportFile(original.storageKey);
+    const conflict = errorCode(error) === 'P2034';
+    if (errorCode(error) === 'P2002' || conflict || error instanceof DocumentImportError) {
       const replay = await prisma.sacRecord.findUnique({ where: { idempotencyKey }, include: recordInclude });
       if (replay) return { record: maskRecordSensitiveData({ ...replay, operational: classifyOperationalAttention(replay) }), created: false };
+    }
+    if (conflict && input.importSessionId) {
+      await loadConfirmableImport(input.importSessionId, actorId);
+      throw new SacRecordError('CREATE_CONFLICT', 'Outra gravação ocorreu ao mesmo tempo. Tente salvar novamente.', 409);
     }
     throw error;
   }
